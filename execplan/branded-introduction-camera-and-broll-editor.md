@@ -36,6 +36,9 @@ the managed B1 scheduler API.
 - [x] (2026-08-15 16:32Z) Created immutable branded-introduction timeline `2087a218-3b0a-494d-b2d5-e920650b018b`, qualification render `ab9fd6ab-84ee-432e-9fc2-3a103210f81e`, and thumbnail `51b3af24-a4aa-4f6c-a2ff-d0d5e5c95cf9`; stopped at approval `7eee0eb7-d705-410d-b5fc-2f77f1320cdd` before final/package work.
 - [ ] After human approval, create and validate the new full preview/final/package/manifest/recovery chain without live publication.
 - [x] (2026-08-15 16:42Z) Committed and pushed implementation `775ba775c113ab073da42a91ed2d4c8a5bac072c`; CI run `31896047758` passed Compose, frontend, backend lint, and all tests. A documentation-only follow-up records this terminal evidence.
+- [x] (2026-08-15 19:35Z) Reproduced the timeline-trimming usability failure in Chromium without saving: source cards report `00:00.000`, a new five-second clip is only a few pixels wide in a 364-second Fit view, and the inspector exposes four unexplained millisecond fields.
+- [x] (2026-08-15 19:52Z) Corrected browser media-duration discovery and source-aware edge trimming, added deterministic playhead trim actions and focus-selected zoom, and replaced the raw inspector with a guided clip/source-time workflow.
+- [x] (2026-08-15 19:55Z) Validated pointer, playhead, preview-source, keyboard, undo/redo, linked-presentation, reload, build, and accessibility behavior in tests and Chromium without saving or modifying accepted media assets.
 
 ## Surprises & Discoveries
 
@@ -75,6 +78,24 @@ the managed B1 scheduler API.
   `4ef692b6-7ffd-49d3-a5a7-7cd8baf85ee1` remains as rejected evidence.
   Evidence: `show_identity_slate.v2`, visual frames under `output/playwright`, and
   immutable asset review metadata.
+- Observation: the five immutable B-roll assets have valid MP4 files lasting about
+  118-508 seconds, but their API `duration_ms` values are null. The browser therefore
+  labels every source `00:00.000`; direct `ffprobe` measurements prove the media is
+  not zero-length. At Fit scale, even the five-second fallback clip occupies roughly
+  eight pixels and its two seven-pixel handles overlap.
+  Evidence: Chromium snapshot `page-2026-08-15T19-35-00-391Z.yml`, screenshot
+  `output/playwright/timeline-before-usability-fix.png`, episode asset JSON, and
+  local `ffprobe` output.
+- Observation: pointer edge trimming currently changes only programme start/end;
+  it does not move the matching source in/out boundary. The visible source clock
+  can consequently disagree with the frames implied by the shortened clip.
+  Evidence: `frontend/src/main.tsx::beginClipPointerEdit`.
+- Observation: the source MP4 endpoint correctly supports byte ranges, and Chromium
+  can obtain the true durations from native media metadata without a database or
+  asset mutation. Large files whose metadata takes longer now say “Reading
+  duration…” instead of falsely claiming zero duration.
+  Evidence: HTTP 206/`Accept-Ranges: bytes`, browser `readyState`/duration probes,
+  and final source-library snapshots.
 
 ## Decision Log
 
@@ -118,6 +139,13 @@ the managed B1 scheduler API.
   Rationale: directors can review a 21-second introduction rather than re-encoding
   six minutes, without making the review artifact ambiguous.
   Date/Author: 2026-08-15 / Codex.
+- Decision: retain direct manipulation, but pair it with large labelled edge grips,
+  source-aware trim semantics, and explicit “trim to playhead” buttons. Selecting a
+  short clip can focus the timeline to a useful scale; raw precision fields move
+  behind an advanced disclosure.
+  Rationale: pointer precision should be optional, and every trim must have a clear,
+  deterministic route that preserves source continuity and is reversible.
+  Date/Author: 2026-08-15 / Codex.
 - Decision: the accepted legacy Production v2 episode uses its pinned, measured
   character-matte/desk composition recipe for this one qualification; new normal
   episodes continue through the reusable managed renderer.
@@ -141,6 +169,18 @@ publication was created because approval `7eee0eb7-d705-410d-b5fc-2f77f1320cdd`
 is pending. Non-frontal plate plus screen-graphic overlap is explicitly disabled
 until the calibrated quadrilateral is applied by the compositor; frontal targeted
 camera motion and reviewed alternate plates without new screen graphics are ready.
+
+The follow-up usability pass repaired the practical clipping workflow. A selected
+short clip now opens at a useful zoom and is centered; large striped grips and
+playhead buttons both trim it; B-roll programme and source clocks stay aligned;
+preview-frame source changes preserve clip length; precise millisecond inputs are
+progressively disclosed; and real media durations replace the false zero values.
+In Chromium, a start trim to 3.009 seconds changed programme/source ranges together,
+a pointer end trim extended both to 7.000 seconds, preview source start at 10.000
+seconds retained the 3.991-second clip length, ArrowRight moved only the programme
+range by 100 ms, and Undo/Redo restored both clocks. The browser draft was never
+saved, so timeline v8 and every immutable production/approval artifact remain
+unchanged.
 
 ## Context and Orientation
 
@@ -300,6 +340,15 @@ five eligible B-roll sources, linked content and
 presentation duplication, two-step undo, valid save state, project branding
 controls, camera-plate controls, and the pending qualification review.
 
+Timeline usability evidence: all 108 frontend tests and the TypeScript/Vite
+production build pass. The pure editing tests cover source-aware boundary clamps,
+source-length preservation, invalid precision input, duration selection, and focus
+zoom. Chromium evidence is in
+`output/playwright/timeline-before-usability-fix.png`,
+`output/playwright/timeline-after-usability-fix-draft.png`, and
+`output/playwright/timeline-trim-inspector-final.png`; the final live snapshot
+reported a valid timeline and 32x focus without the misleading video fallback.
+
 ## Interfaces and Dependencies
 
 Add optional `Project.branding` and episode-level logo override contracts while
@@ -330,3 +379,13 @@ and thumbnail, and the active human-review gate.
 
 Plan change note (2026-08-15 16:42Z): recorded successful source publication and
 GitHub CI completion for implementation commit `775ba775`.
+
+Plan change note (2026-08-15 19:35Z): reopened the editor milestone after real-user
+feedback, recorded the browser-reproduced duration/scale/source-clock failures, and
+added a focused usability-and-correctness validation pass without changing the
+pending production approval or immutable assets.
+
+Plan change note (2026-08-15 19:55Z): recorded the completed clipping-usability
+repair, source-clock semantics, 108-test/build result, real Chromium pointer and
+keyboard evidence, and confirmation that the browser-only qualification draft was
+not saved.

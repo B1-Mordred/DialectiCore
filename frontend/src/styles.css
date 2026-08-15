@@ -3981,14 +3981,14 @@ button {
   overflow: hidden;
   border: 1px solid #5ca59e;
   border-radius: 4px;
-  padding: 0 6px;
+  padding: 0 16px;
   background: #dff2ef;
   color: #174f4a;
   font-size: 11px;
   text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: pointer;
+  cursor: grab;
   user-select: none;
   touch-action: none;
 }
@@ -3998,17 +3998,48 @@ button {
   z-index: 2;
   top: 0;
   bottom: 0;
-  width: 7px;
-  background: rgb(15 118 110 / 18%);
+  width: 14px;
+  border: 0 solid rgb(15 118 110 / 55%);
+  background: rgb(15 118 110 / 22%);
   cursor: ew-resize;
+}
+
+.timelineTrimHandle::before {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-left: 1px solid rgb(15 78 73 / 70%);
+  border-right: 1px solid rgb(15 78 73 / 70%);
+  content: "";
 }
 
 .timelineTrimHandle.start {
   left: 0;
+  border-right-width: 1px;
+}
+
+.timelineTrimHandle.start::before {
+  left: 4px;
 }
 
 .timelineTrimHandle.end {
   right: 0;
+  border-left-width: 1px;
+}
+
+.timelineTrimHandle.end::before {
+  right: 4px;
+}
+
+.timelineLaneClip.selected .timelineTrimHandle,
+.timelineLaneClip:hover .timelineTrimHandle {
+  width: 18px;
+  background: rgb(15 118 110 / 35%);
+}
+
+.timelineClipLabel {
+  pointer-events: none;
 }
 
 .timelineLaneClip.selected,
@@ -4019,14 +4050,121 @@ button {
 
 .timelineClipEditor {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  align-items: end;
+  align-items: start;
   margin: 10px 14px 0;
-  padding: 12px;
+  padding: 16px;
   border: 1px solid #b9d8d4;
-  border-radius: 6px;
+  border-radius: 8px;
   background: #f1faf8;
+}
+
+.timelineClipInspectorHeader,
+.timelineTrimGuide,
+.timelineTimingSummary,
+.timelineTrimActions,
+.timelinePreciseTiming,
+.timelineClipActions {
+  grid-column: 1 / -1;
+}
+
+.timelineClipInspectorHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.timelineClipInspectorHeader > button,
+.timelineTrimActions button {
+  min-height: 38px;
+  border: 1px solid #94a3b8;
+  border-radius: 6px;
+  padding: 8px 12px;
+  background: #fff;
+  color: #243842;
+  cursor: pointer;
+}
+
+.timelineTrimGuide {
+  display: grid;
+  gap: 3px;
+  border-left: 4px solid #0f766e;
+  padding: 10px 12px;
+  background: #e5f5f2;
+  color: #31424c;
+  line-height: 1.45;
+}
+
+.timelineTrimGuide span {
+  max-width: 75ch;
+  color: #52616b;
+  font-size: 13px;
+}
+
+.timelineTimingSummary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.timelineTimingSummary > div {
+  display: grid;
+  gap: 3px;
+  border: 1px solid #cddfdd;
+  border-radius: 6px;
+  padding: 10px;
+  background: #fff;
+}
+
+.timelineTimingSummary span {
+  color: #64717a;
+  font-size: 11px;
+}
+
+.timelineTimingSummary strong {
+  color: #223039;
+  font-size: 13px;
+}
+
+.timelineTrimActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.timelineTrimActions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-color: #0f766e;
+  color: #174f4a;
+}
+
+.timelineTrimActions button:disabled,
+.timelineClipInspectorHeader > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.timelinePreciseTiming {
+  border-top: 1px solid #cddfdd;
+  padding-top: 10px;
+}
+
+.timelinePreciseTiming summary {
+  color: #3f535d;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.timelinePreciseTiming > div {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
 }
 
 .timelineClipIdentity {
@@ -4045,7 +4183,7 @@ button {
 .timelineBrollPreview {
   display: grid;
   gap: 5px;
-  grid-column: span 2;
+  grid-column: 1 / -1;
 }
 
 .timelineBrollPreview video {
@@ -4075,6 +4213,13 @@ button {
 .timelineClipActions,
 .timelineBoundaryControls {
   align-self: end;
+}
+
+@media (max-width: 860px) {
+  .timelineClipEditor,
+  .timelineTimingSummary {
+    grid-template-columns: 1fr;
+  }
 }
 
 .timelineClipIdentity > strong {

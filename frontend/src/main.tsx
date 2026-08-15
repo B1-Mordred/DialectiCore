@@ -83,6 +83,12 @@ import { productionReportActionRows } from "./productionReportActionRows";
 import { productionReportOperatorActionSummary } from "./productionReportOperatorActions";
 import { canRenderFinal, canRenderPreview } from "./renderGates";
 import {
+  positiveDurationMs,
+  setSourceBoundaryPreservingDuration,
+  trimTimelineClip,
+  zoomForClip,
+} from "./timelineEditing";
+import {
   authSettingsDetailRows,
   assetProductionObservabilitySummary,
   backupContentValidationSummary,
@@ -23547,9 +23553,15 @@ function TimelineEditorPanel(props: {
   const [timelineZoom, setTimelineZoom] = React.useState(0);
   const [playheadMs, setPlayheadMs] = React.useState(0);
   const [snapEnabled, setSnapEnabled] = React.useState(true);
+  const [observedAssetDurations, setObservedAssetDurations] = React.useState<
+    Record<string, number>
+  >({});
   const [undoStack, setUndoStack] = React.useState<TimelinePayload[]>([]);
   const [redoStack, setRedoStack] = React.useState<TimelinePayload[]>([]);
   const brollPreviewRef = React.useRef<HTMLVideoElement>(null);
+  const [brollPreviewError, setBrollPreviewError] = React.useState(false);
+  const timelineLanesRef = React.useRef<HTMLDivElement>(null);
+  const suppressTimelineRailClickRef = React.useRef(false);
   const [brollPreviewPositionMs, setBrollPreviewPositionMs] = React.useState(0);
   const [cameraPlateAngleId, setCameraPlateAngleId] = React.useState("alternate-wide");
   const [selectedCameraPlateId, setSelectedCameraPlateId] = React.useState<string | null>(
@@ -23821,6 +23833,20 @@ function TimelineEditorPanel(props: {
       end_ms: Number(clip.end_ms) + appliedDelta,
     });
   };
+  const selectedBrollAsset =
+    selectedTrackClip?.trackName === "broll_content" && selectedClip?.asset_id
+      ? props.episode?.assets.find((asset) => asset.id === selectedClip.asset_id) ?? null
+      : null;
+  const knownBrollDurationMs = (asset: Asset | null | undefined) =>
+    positiveDurationMs(
+      asset?.duration_ms,
+      asset ? observedAssetDurations[asset.id] : null,
+      asset?.generation_metadata?.source_duration_ms,
+      (asset?.generation_metadata?.primer_visual_analysis as
+        | Record<string, unknown>
+        | undefined)?.source_duration_ms,
+    );
+  const selectedBrollDurationMs = knownBrollDurationMs(selectedBrollAsset);
   const setBrollBoundaryFromPreview = (boundary: "in" | "out") => {
     const currentTime = brollPreviewRef.current?.currentTime;
     if (
@@ -23833,16 +23859,17 @@ function TimelineEditorPanel(props: {
     }
     const positionMs = Math.max(0, Math.round(currentTime * 1000));
     setBrollPreviewPositionMs(positionMs);
-    updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
-      ...(boundary === "in"
-        ? { source_in_ms: positionMs }
-        : { source_out_ms: positionMs }),
-    });
+    updateTrackClip(
+      selectedTrackClip.trackName,
+      selectedClip.id,
+      setSourceBoundaryPreservingDuration(
+        selectedClip,
+        boundary,
+        positionMs,
+        selectedBrollDurationMs,
+      ),
+    );
   };
-  const selectedBrollAsset =
-    selectedTrackClip?.trackName === "broll_content" && selectedClip?.asset_id
-      ? props.episode?.assets.find((asset) => asset.id === selectedClip.asset_id) ?? null
-      : null;
   const selectedBrollUrl = selectedBrollAsset
     ? episodeAssetDownloadUrlById(props.episode?.id, selectedBrollAsset.id)
     : null;
@@ -23886,7 +23913,7 @@ function TimelineEditorPanel(props: {
     if (!draft?.tracks) return;
     const programmeDuration = Number(draft.duration_ms ?? 0);
     const startMs = Math.min(Math.max(0, playheadMs), Math.max(0, programmeDuration - 100));
-    const sourceDuration = Number(asset.duration_ms ?? 5_000);
+    const sourceDuration = knownBrollDurationMs(asset) ?? 5_000;
     const durationMs = Math.max(100, Math.min(sourceDuration, 5_000, programmeDuration - startMs));
     const clipId = `broll-content-${crypto.randomUUID()}`;
     const presentationId = `broll-presentation-${crypto.randomUUID()}`;
@@ -23934,6 +23961,7 @@ function TimelineEditorPanel(props: {
       },
     });
     setSelectedTrackClip({ trackName: "broll_content", clipId });
+    setTimelineZoom(zoomForClip(programmeDuration, durationMs));
   };
   const removeSelectedClip = () => {
     if (!draft?.tracks || !selectedTrackClip) return;
@@ -24040,10 +24068,19 @@ function TimelineEditorPanel(props: {
     const programmeDuration = Number(snapshot.duration_ms ?? 0);
     const sourceStart = Number(clip.start_ms);
     const sourceEnd = Number(clip.end_ms);
+    const sourceAsset = clip.asset_id
+      ? props.episode?.assets.find((asset) => asset.id === clip.asset_id)
+      : null;
+    const sourceDurationMs = knownBrollDurationMs(sourceAsset);
     const onMove = (moveEvent: PointerEvent) => {
+      if (Math.abs(moveEvent.clientX - originX) > 2) {
+        suppressTimelineRailClickRef.current = true;
+      }
       const deltaMs = ((moveEvent.clientX - originX) / railWidth) * programmeDuration;
       let startMs = sourceStart;
       let endMs = sourceEnd;
+      let sourceInMs = Number(clip.source_in_ms ?? 0);
+      let sourceOutMs = Number(clip.source_out_ms ?? sourceInMs + sourceEnd - sourceStart);
       if (mode === "move") {
         const boundedDelta = Math.min(
           Math.max(deltaMs, -sourceStart),
@@ -24056,22 +24093,37 @@ function TimelineEditorPanel(props: {
           moveEvent.altKey,
         );
         endMs = startMs + sourceEnd - sourceStart;
-      } else if (mode === "trim-start") {
-        startMs = Math.min(
-          sourceEnd - 100,
-          snapTimelineMs(sourceStart + deltaMs, snapshot, clip.id, moveEvent.altKey),
-        );
       } else {
-        endMs = Math.max(
-          sourceStart + 100,
-          snapTimelineMs(sourceEnd + deltaMs, snapshot, clip.id, moveEvent.altKey),
+        const boundary = mode === "trim-start" ? "start" : "end";
+        const requestedMs = snapTimelineMs(
+          (boundary === "start" ? sourceStart : sourceEnd) + deltaMs,
+          snapshot,
+          clip.id,
+          moveEvent.altKey,
         );
+        const trimmed = trimTimelineClip(clip, boundary, requestedMs, {
+          programmeDurationMs: programmeDuration,
+          sourceAware: trackName === "broll_content",
+          sourceDurationMs,
+        });
+        startMs = Number(trimmed.start_ms);
+        endMs = Number(trimmed.end_ms);
+        sourceInMs = Number(trimmed.source_in_ms ?? sourceInMs);
+        sourceOutMs = Number(trimmed.source_out_ms ?? sourceOutMs);
       }
       setDraft((current) => {
         if (!current?.tracks) return current;
         const update = (candidate: TimelineTrackClip) =>
           candidate.id === clip.id
-            ? { ...candidate, start_ms: startMs, end_ms: endMs, duration_ms: endMs - startMs }
+            ? {
+                ...candidate,
+                start_ms: startMs,
+                end_ms: endMs,
+                duration_ms: endMs - startMs,
+                ...(trackName === "broll_content"
+                  ? { source_in_ms: sourceInMs, source_out_ms: sourceOutMs }
+                  : {}),
+              }
             : candidate;
         const nextTracks: Record<string, unknown> = {
           ...current.tracks,
@@ -24100,10 +24152,81 @@ function TimelineEditorPanel(props: {
       window.removeEventListener("pointerup", onUp);
       setUndoStack((history) => [...history.slice(-29), snapshot]);
       setRedoStack([]);
+      window.setTimeout(() => {
+        suppressTimelineRailClickRef.current = false;
+      }, 0);
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp, { once: true });
   };
+  const trimSelectedClipToPlayhead = (boundary: "start" | "end") => {
+    if (!draft || !selectedTrackClip || !selectedClip) return;
+    const sourceDurationMs = selectedClip.asset_id
+      ? knownBrollDurationMs(
+          props.episode?.assets.find((asset) => asset.id === selectedClip.asset_id),
+        )
+      : null;
+    const trimmed = trimTimelineClip(selectedClip, boundary, playheadMs, {
+      programmeDurationMs: Number(draft.duration_ms ?? 0),
+      sourceAware: selectedTrackClip.trackName === "broll_content",
+      sourceDurationMs,
+    });
+    updateTrackClip(selectedTrackClip.trackName, selectedClip.id, trimmed);
+  };
+  const setSelectedProgrammeBoundary = (boundary: "start" | "end", valueMs: number) => {
+    if (!draft || !selectedTrackClip || !selectedClip) return;
+    const sourceDurationMs = selectedClip.asset_id
+      ? knownBrollDurationMs(
+          props.episode?.assets.find((asset) => asset.id === selectedClip.asset_id),
+        )
+      : null;
+    updateTrackClip(
+      selectedTrackClip.trackName,
+      selectedClip.id,
+      trimTimelineClip(selectedClip, boundary, valueMs, {
+        programmeDurationMs: Number(draft.duration_ms ?? 0),
+        sourceAware: selectedTrackClip.trackName === "broll_content",
+        sourceDurationMs,
+      }),
+    );
+  };
+  const setSelectedSourceBoundary = (boundary: "in" | "out", valueMs: number) => {
+    if (!selectedTrackClip || !selectedClip) return;
+    updateTrackClip(
+      selectedTrackClip.trackName,
+      selectedClip.id,
+      setSourceBoundaryPreservingDuration(
+        selectedClip,
+        boundary,
+        valueMs,
+        selectedBrollDurationMs,
+      ),
+    );
+  };
+  const focusSelectedClip = () => {
+    if (!draft || !selectedClip) return;
+    setTimelineZoom(
+      zoomForClip(
+        Number(draft.duration_ms ?? 0),
+        Number(selectedClip.end_ms) - Number(selectedClip.start_ms),
+      ),
+    );
+  };
+
+  React.useEffect(() => {
+    if (!selectedTrackClip || timelineZoom === 0) return;
+    const frame = window.requestAnimationFrame(() => {
+      const clipElement = [...(timelineLanesRef.current?.querySelectorAll<HTMLElement>(
+        ".timelineLaneClip",
+      ) ?? [])].find(
+        (element) =>
+          element.dataset.trackName === selectedTrackClip.trackName &&
+          element.dataset.clipId === selectedTrackClip.clipId,
+      );
+      clipElement?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [selectedTrackClip?.trackName, selectedTrackClip?.clipId, timelineZoom]);
 
   React.useEffect(() => {
     if (!selectedBrollAsset || !selectedClip || !brollPreviewRef.current) return;
@@ -24111,7 +24234,18 @@ function TimelineEditorPanel(props: {
     const sourceMs =
       Number(selectedClip.source_in_ms ?? 0) + playheadMs - Number(selectedClip.start_ms);
     brollPreviewRef.current.currentTime = Math.max(0, sourceMs / 1000);
-  }, [playheadMs, selectedBrollAsset?.id, selectedClip?.id]);
+  }, [
+    playheadMs,
+    selectedBrollAsset?.id,
+    selectedClip?.id,
+    selectedClip?.start_ms,
+    selectedClip?.end_ms,
+    selectedClip?.source_in_ms,
+  ]);
+
+  React.useEffect(() => {
+    setBrollPreviewError(false);
+  }, [selectedBrollAsset?.id]);
   const directingClips = DIRECTING_TRACK_LANES.flatMap(([trackName]) =>
     timelineTrackClips(draft, trackName),
   );
@@ -24130,6 +24264,15 @@ function TimelineEditorPanel(props: {
       Number(clip.source_out_ms) <= Number(clip.source_in_ms ?? 0)
     ) {
       timelineValidationErrors.push(`${clip.id}: source out must follow source in.`);
+    }
+  }
+  for (const clip of timelineTrackClips(draft, "broll_content")) {
+    const sourceAsset = clip.asset_id
+      ? props.episode?.assets.find((asset) => asset.id === clip.asset_id)
+      : null;
+    const sourceDurationMs = knownBrollDurationMs(sourceAsset);
+    if (sourceDurationMs && Number(clip.source_out_ms ?? 0) > sourceDurationMs) {
+      timelineValidationErrors.push(`${clip.id}: source out is beyond the end of the video.`);
     }
   }
   const contentIds = new Set(
@@ -24374,19 +24517,39 @@ function TimelineEditorPanel(props: {
             <div className="timelineSourceLibraryGrid">
               {eligibleBrollAssets.map((asset) => {
                 const url = episodeAssetDownloadUrlById(props.episode?.id, asset.id);
+                const sourceDurationMs = knownBrollDurationMs(asset);
                 return (
                   <article className="timelineSourceCard" key={asset.id}>
                     {asset.mime_type?.startsWith("video/") || asset.asset_type === "video" ? (
-                      <video muted preload="metadata" src={url ?? undefined} />
+                      <video
+                        muted
+                        onLoadedMetadata={(event) => {
+                          const durationMs = Math.round(event.currentTarget.duration * 1000);
+                          if (!Number.isFinite(durationMs) || durationMs <= 0) return;
+                          setObservedAssetDurations((current) =>
+                            current[asset.id] === durationMs
+                              ? current
+                              : { ...current, [asset.id]: durationMs },
+                          );
+                        }}
+                        preload="metadata"
+                        src={url ?? undefined}
+                      />
                     ) : (
                       <img alt="" loading="lazy" src={url ?? undefined} />
                     )}
                     <div>
                       <strong>
-                        {String(asset.generation_metadata?.visual_role ?? asset.asset_type)}
+                        {String(
+                          asset.generation_metadata?.title ??
+                            asset.generation_metadata?.visual_role ??
+                            asset.asset_type,
+                        )}
                       </strong>
                       <span>
-                        {formatPrimerTimestamp(Number(asset.duration_ms ?? 0))} · {shortId(asset.id)}
+                        {sourceDurationMs
+                          ? formatPrimerTimestamp(sourceDurationMs)
+                          : "Reading duration…"} · {shortId(asset.id)}
                       </span>
                     </div>
                     <button onClick={() => addBrollAssetToTimeline(asset)} type="button">
@@ -24400,7 +24563,10 @@ function TimelineEditorPanel(props: {
           <div className="timelineToolbar">
             <div>
               <strong>Directing tracks</strong>
-              <span>Drag clips or their handles. Hold Alt to bypass snapping.</span>
+              <span>
+                Playhead {formatPrimerTimestamp(playheadMs)} · drag a clip to move it or
+                drag its striped edge grips to trim. Hold Alt to bypass snapping.
+              </span>
             </div>
             <div className="timelineToolbarActions">
               <button disabled={!undoStack.length} onClick={undoTimelineEdit} type="button">
@@ -24419,7 +24585,7 @@ function TimelineEditorPanel(props: {
               </button>
             </div>
             <div className="timelineZoomControls" aria-label="Timeline zoom">
-              {[0, 1, 2, 4].map((zoom) => (
+              {[0, 2, 4, 8, 16, 32].map((zoom) => (
                 <button
                   aria-pressed={timelineZoom === zoom}
                   className={timelineZoom === zoom ? "selected" : ""}
@@ -24430,9 +24596,20 @@ function TimelineEditorPanel(props: {
                   {zoom === 0 ? "Fit" : `${zoom}x`}
                 </button>
               ))}
+              <button
+                disabled={!selectedClip}
+                onClick={focusSelectedClip}
+                type="button"
+              >
+                Focus clip
+              </button>
             </div>
           </div>
-          <div className="timelineLanes" aria-label="Parallel directing timeline">
+          <div
+            className="timelineLanes"
+            aria-label="Parallel directing timeline"
+            ref={timelineLanesRef}
+          >
             <div className="timelineLane timelineRulerLane" aria-hidden="true">
               <strong>Time</strong>
               <div
@@ -24468,6 +24645,7 @@ function TimelineEditorPanel(props: {
                   <div
                     className="timelineLaneRail"
                     onClick={(event) => {
+                      if (suppressTimelineRailClickRef.current) return;
                       if (event.target !== event.currentTarget) return;
                       const bounds = event.currentTarget.getBoundingClientRect();
                       setPlayheadMs(
@@ -24501,6 +24679,8 @@ function TimelineEditorPanel(props: {
                               ? "selected"
                               : ""
                           }`}
+                          data-clip-id={clip.id}
+                          data-track-name={trackName}
                           key={clip.id}
                           onKeyDown={(event) => {
                             if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
@@ -24527,19 +24707,23 @@ function TimelineEditorPanel(props: {
                           title={`${clip.id} · ${clip.start_ms}-${clip.end_ms}ms`}
                         >
                           <span
-                            aria-hidden="true"
+                            aria-label={`Trim start of ${clip.id}`}
                             className="timelineTrimHandle start"
                             onPointerDown={(event) =>
                               beginClipPointerEdit(event, trackName, clip, "trim-start")
                             }
+                            title="Trim start"
                           />
-                          {clip.participant_id ?? clip.speaker_participant_id ?? clip.id}
+                          <span className="timelineClipLabel">
+                            {clip.participant_id ?? clip.speaker_participant_id ?? clip.id}
+                          </span>
                           <span
-                            aria-hidden="true"
+                            aria-label={`Trim end of ${clip.id}`}
                             className="timelineTrimHandle end"
                             onPointerDown={(event) =>
                               beginClipPointerEdit(event, trackName, clip, "trim-end")
                             }
+                            title="Trim end"
                           />
                         </div>
                       );
@@ -24551,16 +24735,82 @@ function TimelineEditorPanel(props: {
           </div>
           {selectedTrackClip && selectedClip ? (
             <div className="timelineClipEditor">
-              <div className="timelineClipIdentity">
-                <strong>
-                  {selectedTrackClip.trackName} · {selectedClip.id}
-                </strong>
+              <div className="timelineClipInspectorHeader">
+                <div className="timelineClipIdentity">
+                  <span>Selected clip</span>
+                  <strong>
+                    {DIRECTING_TRACK_LANES.find(
+                      ([trackName]) => trackName === selectedTrackClip.trackName,
+                    )?.[1] ?? selectedTrackClip.trackName}
+                  </strong>
+                  <span>{selectedClip.id}</span>
+                </div>
+                <button onClick={focusSelectedClip} type="button">
+                  Focus on timeline
+                </button>
+              </div>
+              <div className="timelineTrimGuide" role="note">
+                <strong>Trim this clip</strong>
                 <span>
-                  {formatPrimerTimestamp(selectedClip.start_ms)}–
-                  {formatPrimerTimestamp(selectedClip.end_ms)} · source {" "}
-                  {formatPrimerTimestamp(Number(selectedClip.source_in_ms ?? 0))}–
-                  {formatPrimerTimestamp(Number(selectedClip.source_out_ms ?? 0))}
+                  Place the red playhead, then use a trim button below—or drag the
+                  striped left and right grips on the timeline. B-roll source time
+                  follows the edge automatically.
                 </span>
+              </div>
+              <div className="timelineTimingSummary">
+                <div>
+                  <span>Programme</span>
+                  <strong>
+                    {formatPrimerTimestamp(selectedClip.start_ms)} – {" "}
+                    {formatPrimerTimestamp(selectedClip.end_ms)}
+                  </strong>
+                  <span>
+                    {formatPrimerTimestamp(
+                      Number(selectedClip.end_ms) - Number(selectedClip.start_ms),
+                    )} long
+                  </span>
+                </div>
+                {selectedTrackClip.trackName === "broll_content" ? (
+                  <div>
+                    <span>Source media</span>
+                    <strong>
+                      {formatPrimerTimestamp(Number(selectedClip.source_in_ms ?? 0))} – {" "}
+                      {formatPrimerTimestamp(Number(selectedClip.source_out_ms ?? 0))}
+                    </strong>
+                    <span>
+                      {selectedBrollDurationMs
+                        ? `${formatPrimerTimestamp(selectedBrollDurationMs)} available`
+                        : "Duration still loading"}
+                    </span>
+                  </div>
+                ) : null}
+                <div>
+                  <span>Playhead</span>
+                  <strong>{formatPrimerTimestamp(playheadMs)}</strong>
+                  <span>Click the ruler or an empty track area to move it.</span>
+                </div>
+              </div>
+              <div className="timelineTrimActions" aria-label="Trim selected clip">
+                <button
+                  disabled={
+                    playheadMs <= Number(selectedClip.start_ms) ||
+                    playheadMs >= Number(selectedClip.end_ms) - 100
+                  }
+                  onClick={() => trimSelectedClipToPlayhead("start")}
+                  type="button"
+                >
+                  <ChevronsLeft size={15} /> Trim start to playhead
+                </button>
+                <button
+                  disabled={
+                    playheadMs <= Number(selectedClip.start_ms) + 100 ||
+                    playheadMs >= Number(selectedClip.end_ms)
+                  }
+                  onClick={() => trimSelectedClipToPlayhead("end")}
+                  type="button"
+                >
+                  Trim end to playhead <ChevronsRight size={15} />
+                </button>
               </div>
               {selectedBrollUrl &&
               (selectedBrollAsset?.asset_type === "video" ||
@@ -24569,6 +24819,17 @@ function TimelineEditorPanel(props: {
                 <div className="timelineBrollPreview">
                   <video
                     controls
+                    onError={() => setBrollPreviewError(true)}
+                    onLoadedMetadata={(event) => {
+                      setBrollPreviewError(false);
+                      if (!selectedBrollAsset) return;
+                      const durationMs = Math.round(event.currentTarget.duration * 1000);
+                      if (!Number.isFinite(durationMs) || durationMs <= 0) return;
+                      setObservedAssetDurations((current) => ({
+                        ...current,
+                        [selectedBrollAsset.id]: durationMs,
+                      }));
+                    }}
                     onSeeked={() =>
                       setBrollPreviewPositionMs(
                         Math.max(
@@ -24580,84 +24841,84 @@ function TimelineEditorPanel(props: {
                     preload="metadata"
                     ref={brollPreviewRef}
                     src={selectedBrollUrl}
-                  >
-                    Your browser cannot preview this B-roll clip.
-                  </video>
-                  <span>Preview frame {formatPrimerFrameTimestamp(brollPreviewPositionMs)}</span>
+                  />
+                  {brollPreviewError ? (
+                    <span className="timelinePreviewError">
+                      Preview unavailable in this browser. You can still trim with the
+                      playhead and timeline edges.
+                    </span>
+                  ) : null}
+                  <span>
+                    Preview frame {formatPrimerFrameTimestamp(brollPreviewPositionMs)}.
+                    Seek to a frame, then choose which source edge it should become.
+                  </span>
+                  <div className="timelineBoundaryControls">
+                    <button onClick={() => setBrollBoundaryFromPreview("in")} type="button">
+                      Use preview as source start
+                    </button>
+                    <button onClick={() => setBrollBoundaryFromPreview("out")} type="button">
+                      Use preview as source end
+                    </button>
+                  </div>
                 </div>
               ) : null}
-              <label className="field">
-                <span>Clip start ms</span>
-                <input
-                  min={0}
-                  onChange={(event) =>
-                    updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
-                      start_ms: Number(event.target.value),
-                    })
-                  }
-                  type="number"
-                  value={selectedClip.start_ms}
-                />
-              </label>
-              <label className="field">
-                <span>Clip end ms</span>
-                <input
-                  min={0}
-                  onChange={(event) =>
-                    updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
-                      end_ms: Number(event.target.value),
-                    })
-                  }
-                  type="number"
-                  value={selectedClip.end_ms}
-                />
-              </label>
-              <label className="field">
-                <span>Source in ms</span>
-                <input
-                  min={0}
-                  onChange={(event) =>
-                    updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
-                      source_in_ms: Number(event.target.value),
-                    })
-                  }
-                  type="number"
-                  value={Number(selectedClip.source_in_ms ?? 0)}
-                />
-              </label>
-              {selectedTrackClip.trackName === "broll_content" ? (
-                <>
+              <details className="timelinePreciseTiming">
+                <summary>Precise timing</summary>
+                <div>
                   <label className="field">
-                    <span>Source out ms</span>
+                    <span>Programme start (ms)</span>
                     <input
-                      min={1}
+                      min={0}
                       onChange={(event) =>
-                        updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
-                          source_out_ms: Number(event.target.value),
-                        })
+                        setSelectedProgrammeBoundary("start", Number(event.target.value))
                       }
+                      step={100}
                       type="number"
-                      value={Number(selectedClip.source_out_ms ?? 0)}
+                      value={selectedClip.start_ms}
                     />
                   </label>
-                  {selectedBrollUrl ? (
-                    <div className="timelineBoundaryControls">
-                      <button
-                        onClick={() => setBrollBoundaryFromPreview("in")}
-                        type="button"
-                      >
-                        <ChevronsLeft size={15} /> Set in
-                      </button>
-                      <button
-                        onClick={() => setBrollBoundaryFromPreview("out")}
-                        type="button"
-                      >
-                        Set out <ChevronsRight size={15} />
-                      </button>
-                    </div>
+                  <label className="field">
+                    <span>Programme end (ms)</span>
+                    <input
+                      min={0}
+                      onChange={(event) =>
+                        setSelectedProgrammeBoundary("end", Number(event.target.value))
+                      }
+                      step={100}
+                      type="number"
+                      value={selectedClip.end_ms}
+                    />
+                  </label>
+                  {selectedTrackClip.trackName === "broll_content" ? (
+                    <>
+                      <label className="field">
+                        <span>Source start (ms)</span>
+                        <input
+                          min={0}
+                          onChange={(event) =>
+                            setSelectedSourceBoundary("in", Number(event.target.value))
+                          }
+                          step={100}
+                          type="number"
+                          value={Number(selectedClip.source_in_ms ?? 0)}
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Source end (ms)</span>
+                        <input
+                          min={100}
+                          onChange={(event) =>
+                            setSelectedSourceBoundary("out", Number(event.target.value))
+                          }
+                          step={100}
+                          type="number"
+                          value={Number(selectedClip.source_out_ms ?? 0)}
+                        />
+                      </label>
+                    </>
                   ) : null}
-                </>
-              ) : null}
+                </div>
+              </details>
               {selectedTrackClip.trackName === "camera_direction" ? (
                 <>
                   <label className="field">
