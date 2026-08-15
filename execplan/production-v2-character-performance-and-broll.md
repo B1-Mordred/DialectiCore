@@ -37,7 +37,9 @@ retained when supplied but are optional and never block editing or rendering.
 - [x] (2026-08-15 08:21Z) Added backward-compatible `episode_timeline.v3` parallel dialogue, character, camera, B-roll content, B-roll presentation, and caption clips while retaining legacy segment-index tracks.
 - [x] (2026-08-15 08:22Z) Extended the Timeline Editor with stacked lanes and accessible numeric clip start, end, and source-in controls; all 102 frontend tests and the production build pass.
 - [x] (2026-08-15 08:24Z) Added render-boundary materialization that preserves uninterrupted stored dialogue segments and continuous B-roll source time across rear-screen/fullscreen/rear-screen changes.
-- [ ] (2026-08-15 09:27Z) Produced revision 2 of the 24-second six-speaker integrated qualification after human review rejected revision 1 for undersized/floating DeepSeek geometry, a rear-screen leak at the torso/desk seam, and abrupt B-roll presentation transitions. Revision 2 is registered and browser-playable; human approval remains pending before full-episode production.
+- [x] (2026-08-15 10:01Z) Produced and received human approval for revision 2 of the 24-second six-speaker integrated qualification after revision 1 exposed undersized/floating DeepSeek geometry, a rear-screen leak at the torso/desk seam, and abrupt B-roll presentation transitions. The approval now records `approved_for_full_production` durably.
+- [x] (2026-08-15 09:49Z) Created and dry-run validated the full-production safety archive `storage/backups/dialecticore-backup-20260815T094937Z-pre-production-v2-full-20260815.tar.gz`, SHA-256 `17888466a8e427fb619c3edc43ac1a71123add966b3a23b78814b620a0af9bcd`, including 5,473 database records and 657 object-store files.
+- [ ] (2026-08-15 10:05Z) Started the resumable 21-turn full-production animation batch through the managed B1 media API. Preserved two valid first-attempt jobs, cancelled the remaining queued invalid-header jobs, normalized all upload-only WAV headers, and resumed with 300.377 seconds of validated dialogue audio.
 - [ ] Regenerate, QC, UI-approve, package, and recovery-test the complete v2 episode without replacing v1.
 - [ ] Commit and push intentional checkpoints, obtain green CI, verify deployed/local/remote source provenance, and record exact v2 artifacts and limitations.
 
@@ -149,6 +151,15 @@ retained when supplied but are optional and never block editing or rendering.
   Evidence: isolated DeepSeek segment frames before and after changing the
   expression to the segment-local frame counter `N`; revision 2 shows studio,
   intermediate blend, and fullscreen frames over two seconds.
+- Observation: several canonical Voicebox streaming WAV files carry a sentinel
+  frame count of `2147483647` while their playable data is only 8-21 seconds.
+  FFmpeg derives the correct duration from file length, but B1's deterministic
+  Python WAV validator correctly treats the header literally and rejects the
+  request before inference.
+  Evidence: the first full-batch jobs failed with `duration_ms differs from
+  uploaded WAV duration by more than 250 ms`; local `wave` inspection exposed
+  the sentinel while `ffprobe` reported the expected duration. Upload-only PCM
+  rewrites now pass the same `wave` calculation for all 21 turns.
 
 ## Decision Log
 
@@ -222,6 +233,11 @@ retained when supplied but are optional and never block editing or rendering.
   Rationale: transition pace is an editorial choice and must not be embedded as
   an accidental fixed FFmpeg timestamp behavior.
   Date/Author: 2026-08-15 / user review and Codex.
+- Decision: preserve the canonical Voicebox WAVs byte-for-byte and create
+  provenance-bound, seekable PCM copies only for managed B1 animation uploads.
+  Rationale: this repairs invalid streaming headers without mutating approved
+  audio assets, while matching the exact duration validator used by B1.
+  Date/Author: 2026-08-15 / Codex.
 
 ## Outcomes & Retrospective
 
@@ -239,8 +255,10 @@ supersedes the first qualification without overwriting it. Its render asset is
 `647b732587ef841d1d88e71d186729d3f0b733fd364a42ad562c79f2b15bf29b`.
 The v1 final remains completed with SHA-256
 `1837df46318eba0bd0a21dc60c0d97b5c0236423476401058f3bdfd0278b3218`.
-Full v2 episode production is intentionally gated on the pending human review,
-not inferred from Codex's contact-sheet and browser checks.
+The user approved revision 2 on 2026-08-15, and the durable gate now reads
+`approved_for_full_production`. Full v2 episode production is in progress
+through B1's managed media queue; final preview and packaging remain gated on
+QC and human review rather than inferred from automated checks.
 
 ## Context and Orientation
 

@@ -92,6 +92,12 @@ def _animation_path(participant_id: str) -> Path:
     return ANIMATION_ROOT / participant_id / f"{SELECTED_CANDIDATE[participant_id]}.mp4"
 
 
+def _participant_source_input_index(participant_id: str) -> int:
+    # Inputs 0 and 1 are the studio and B-roll. Each participant then adds a
+    # source input followed by its alpha matte input.
+    return 2 + PARTICIPANTS.index(participant_id) * 2
+
+
 def _character_layout(participant_id: str) -> dict[str, int]:
     size = CHARACTER_CANVAS_SIZE[participant_id]
     geometry = MATTE_GEOMETRY[participant_id]
@@ -249,7 +255,7 @@ def _render_segment(
             "-map",
             "[vout]",
             "-map",
-            "2:a:0?",
+            f"{_participant_source_input_index(participant_id)}:a:0?",
             "-t",
             str(SEGMENT_SECONDS),
             "-r",

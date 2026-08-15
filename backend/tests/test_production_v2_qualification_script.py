@@ -31,3 +31,10 @@ def test_presentation_blend_uses_segment_local_frame_clock() -> None:
     assert "N" in leaving
     assert "T" not in leaving
     assert qualification._presentation_blend(0, 2.0) == "A"
+
+
+def test_active_speaker_audio_input_follows_the_paired_ffmpeg_source() -> None:
+    assert qualification._participant_source_input_index("chatgpt") == 2
+    assert qualification._participant_source_input_index("claude") == 4
+    assert qualification._participant_source_input_index("deepseek") == 6
+    assert qualification._participant_source_input_index("mistral") == 12

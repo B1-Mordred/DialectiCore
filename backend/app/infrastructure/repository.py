@@ -1867,6 +1867,33 @@ class EpisodeRepository:
             elif render_asset.status == "rejected":
                 render_asset.status = "completed"
 
+        if approval.stage == "production_v2_integrated_qualification_review":
+            render_asset = self._target_approval_render_asset(episode, approval)
+            decided_at = datetime.now(UTC)
+            render_asset.generation_metadata = {
+                **render_asset.generation_metadata,
+                "approval_status": decision.decision,
+                "approval_id": str(approval.id),
+                "approval_decided_at": decided_at.isoformat(),
+                "approval_user_id": decision.user_id,
+            }
+            render_asset.updated_at = decided_at
+            if decision.decision == "rejected":
+                render_asset.status = "rejected"
+            elif render_asset.status == "rejected":
+                render_asset.status = "completed"
+            production_v2 = episode.workflow_control.get("production_v2_qualification")
+            if isinstance(production_v2, dict) and str(
+                production_v2.get("approval_id") or ""
+            ) == str(approval.id):
+                production_v2["status"] = (
+                    "approved_for_full_production"
+                    if decision.decision == "approved"
+                    else "changes_requested"
+                )
+                production_v2["decided_at"] = decided_at.isoformat()
+                production_v2["decided_by"] = decision.user_id
+
         if episode.status != previous_status:
             ProductionControlService().record_stage(
                 episode,
@@ -2094,8 +2121,14 @@ class EpisodeRepository:
         )
         if asset is None:
             raise ValueError("render approval target not found")
-        expected_render_type = "preview" if approval.stage == "preview_render_review" else "final"
-        if asset.generation_metadata.get("render_type") != expected_render_type:
+        expected_render_type = {
+            "preview_render_review": "preview",
+            "final_render_review": "final",
+        }.get(approval.stage)
+        if (
+            expected_render_type is not None
+            and asset.generation_metadata.get("render_type") != expected_render_type
+        ):
             raise ValueError(
                 f"{expected_render_type} render approval target is not a "
                 f"{expected_render_type} render"

@@ -305,6 +305,52 @@ def test_render_approval_requires_non_failing_render_qc(tmp_path: Path) -> None:
     assert approved_asset.generation_metadata["approval_status"] == "approved"
 
 
+def test_production_v2_qualification_approval_updates_custom_workflow_gate(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "dialecticore.db"
+    repo = persistent_repository(db_path)
+    episode = repo.create(EpisodeCreateRequest(definition=definition()))
+    render_asset = Asset(
+        episode_id=episode.id,
+        asset_type=AssetType.render,
+        source_entity_type="production_v2_qualification",
+        source_entity_id=str(episode.id),
+        storage_uri="object://dialecticore/qualification/v2.mp4",
+        mime_type="video/mp4",
+        checksum="sha256:qualification-v2",
+        status="completed",
+        generation_metadata={"approval_status": "pending"},
+    )
+    approval = Approval(
+        episode_id=episode.id,
+        stage="production_v2_integrated_qualification_review",
+        target_type="render_asset",
+        target_id=str(render_asset.id),
+    )
+    episode.assets.append(render_asset)
+    episode.approvals.append(approval)
+    episode.workflow_control["production_v2_qualification"] = {
+        "schema_version": "dialecticore.production_v2.qualification.v2",
+        "render_asset_id": str(render_asset.id),
+        "approval_id": str(approval.id),
+        "status": "pending_review",
+    }
+    repo.save(episode)
+
+    decided = repo.record_approval_decision(
+        episode.id,
+        approval.id,
+        ApprovalDecisionRequest(decision="approved", user_id="producer"),
+    )
+
+    decided_render = next(asset for asset in decided.assets if asset.id == render_asset.id)
+    control = decided.workflow_control["production_v2_qualification"]
+    assert decided_render.generation_metadata["approval_status"] == "approved"
+    assert control["status"] == "approved_for_full_production"
+    assert control["decided_by"] == "producer"
+
+
 def test_preview_approval_requires_a_full_timeline_render(tmp_path: Path) -> None:
     db_path = tmp_path / "dialecticore.db"
     repo = persistent_repository(db_path)
