@@ -43,7 +43,10 @@ retained when supplied but are optional and never block editing or rendering.
 - [x] (2026-08-15 10:56Z) Rendered, checksum-verified, technically qualified, registered, and browser-played the complete 364.333-second Production v2 preview as separate episode `9d145344-82c9-46cc-b4c1-661d95f0bf56`; its human preview approval remains pending before final render and packaging.
 - [x] (2026-08-15 12:03Z) Re-composited all 21 turns without rerunning B1 animation, inset the cast over the physical desk, directed turns 1 and 21 as total-studio establishing views, passed full technical QC, registered immutable preview revision 2, and browser-verified playback plus 134 caption cues. Revision 1 remains preserved as superseded evidence.
 - [x] (2026-08-15 13:03Z) Produced and browser-qualified preview revision 5 with positive desk-contact overlap, opening fly-in and closing pull-back, reusable optional virtual camera presets, and a valid editable v5 timeline. Added a zoomable parallel-track editor with B-roll video preview, frame-selected in/out points, source/timeline ranges, placement nudges, presentation mode, transition controls, and programme-boundary validation.
-- [ ] Human-approve the complete v2 preview, then create and approve the final render, thumbnail, package, manifest, dry-run publish record, and recovery test without replacing v1.
+- [x] (2026-08-15 13:30Z) Human-approved preview revision 5 after extending the render/UI gates to recognize both `studio_camera_cuts.v1` and the virtual-camera `studio_camera_cuts.v2` policy; the decision is recorded against the exact reviewed checksum.
+- [x] (2026-08-15 13:35Z) Exercised the generic 1080p final-render path, detected that it flattened the approved studio composite into full-frame speaker clips, and rejected that derivative through the normal final-review gate. The approved preview remains canonical and untouched.
+- [x] (2026-08-15 13:42Z) Added and verified an idempotent Production v2 finalizer that transcodes the exact approved composite to 1920x1080 at 30 fps, records source-preview checksum and approval provenance, accepts the reviewed 364.333-second programme as this episode's 365-second ceiling, performs a full decode/probe check, and creates a fresh final-review approval.
+- [ ] Human-approve the corrected final render, then create the thumbnail, package, manifest, dry-run publish record, and recovery test without replacing v1.
 - [ ] Commit and push intentional checkpoints, obtain green CI, verify deployed/local/remote source provenance, and record exact v2 artifacts and limitations.
 
 ## Surprises & Discoveries
@@ -189,6 +192,18 @@ retained when supplied but are optional and never block editing or rendering.
   Evidence: revision-3 Playwright inspection showed a disabled Save button;
   revision 5 exposes a valid v5 timeline, five shared immutable B-roll links,
   an enabled Save button, and a playable 508.371-second source preview.
+- Observation: revision 5 correctly declares `studio_camera_cuts.v2`, but the
+  repository approval gate and Web UI integrity gate initially recognized only
+  `studio_camera_cuts.v1` and blocked an otherwise valid approval.
+  Evidence: approval returned HTTP 422 with the legacy-composition message;
+  compatibility commit `8ad1bbf1b94f7974daaa01614124d0e03e611e1f` passed CI and
+  the same approval then succeeded without changing the preview bytes.
+- Observation: the generic final renderer consumes the custom v3 timeline as
+  independent per-speaker source clips and does not preserve the already
+  composited studio, rear-screen B-roll, or v2 virtual-camera result.
+  Evidence: rejected render `fd95bbb9-b681-4c49-9037-c81a77cbbd34` failed
+  deterministic final QC with `render_studio_context_missing`; its manifest
+  reports 21 `full_frame_primary` scenes and zero studio-context segments.
 
 ## Decision Log
 
@@ -289,6 +304,13 @@ retained when supplied but are optional and never block editing or rendering.
   Rationale: the user should get useful optional motion now without a false
   directing contract that the renderer cannot reproduce.
   Date/Author: 2026-08-15 / Codex.
+- Decision: finalize Production v2 by transcoding the exact human-approved
+  composite to the delivery preset rather than asking the generic renderer to
+  reinterpret its custom directing tracks.
+  Rationale: this preserves the reviewed pixels, audio, B-roll timing, desk
+  masks, and virtual camera moves while still producing a provenance-bound
+  1080p delivery artifact with normal QC and human approval.
+  Date/Author: 2026-08-15 / Codex.
 
 ## Outcomes & Retrospective
 
@@ -296,7 +318,11 @@ Preview revision 5 now addresses the second and third human-review passes
 without changing the qualified character performances or dialogue audio. Its
 registered render asset is `c20a0d48-2ba0-486f-affb-ad7e5788a918`, checksum
 `sha256:f317348de95c770284b267aeb9467e95d29b0f5c80d012c778f88ec9a12fda48`,
-and approval `6d87887a-3339-4a8f-9acc-fa48f71568e0` remains pending. Browser
+and approval `6d87887a-3339-4a8f-9acc-fa48f71568e0` was approved by the user.
+The provenance-bound 1080p delivery render is
+`7d2e95c1-56d2-4840-af59-c83c2a3c17fb`, checksum
+`sha256:c2688f770873d53853b9f2837a3b87b0f305be57d88aa375e257a869db04736c`,
+with final approval `016245f1-d8c2-420c-a901-af5448dbeb8a` pending. Browser
 evidence confirms a playable 364.333-second render, a 134-cue selectable German
 caption track, positive edge-character desk contact, total-studio opening and
 conclusion frames with gentle virtual motion, and an enabled, previewable
@@ -566,3 +592,8 @@ alpha-body scale rather than equal canvas scale, every character overlaps the
 foreground desk by 12px, and B-roll presentation transitions use a bounded,
 editable duration and segment-local eased clock. Revision 1 remains immutable
 and superseded; full episode production remains blocked on review of revision 2.
+
+Plan update note (2026-08-15 13:43Z): Recorded revision 5 approval, the rejected
+generic final-render experiment, and the corrected approved-composite finalizer.
+The new 1080p artifact preserves the reviewed programme byte lineage, passes
+decode/probe QC, and remains pending human final review before packaging.
