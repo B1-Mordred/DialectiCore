@@ -39,8 +39,9 @@ retained when supplied but are optional and never block editing or rendering.
 - [x] (2026-08-15 08:24Z) Added render-boundary materialization that preserves uninterrupted stored dialogue segments and continuous B-roll source time across rear-screen/fullscreen/rear-screen changes.
 - [x] (2026-08-15 10:01Z) Produced and received human approval for revision 2 of the 24-second six-speaker integrated qualification after revision 1 exposed undersized/floating DeepSeek geometry, a rear-screen leak at the torso/desk seam, and abrupt B-roll presentation transitions. The approval now records `approved_for_full_production` durably.
 - [x] (2026-08-15 09:49Z) Created and dry-run validated the full-production safety archive `storage/backups/dialecticore-backup-20260815T094937Z-pre-production-v2-full-20260815.tar.gz`, SHA-256 `17888466a8e427fb619c3edc43ac1a71123add966b3a23b78814b620a0af9bcd`, including 5,473 database records and 657 object-store files.
-- [ ] (2026-08-15 10:05Z) Started the resumable 21-turn full-production animation batch through the managed B1 media API. Preserved two valid first-attempt jobs, cancelled the remaining queued invalid-header jobs, normalized all upload-only WAV headers, and resumed with 300.377 seconds of validated dialogue audio.
-- [ ] Regenerate, QC, UI-approve, package, and recovery-test the complete v2 episode without replacing v1.
+- [x] (2026-08-15 10:51Z) Completed the resumable 21-turn full-production animation batch through the managed B1 media API. Preserved two valid first-attempt jobs, cancelled the remaining queued invalid-header jobs, normalized all upload-only WAV headers, and completed 300.377 seconds of dialogue with zero failures in the corrected batch.
+- [x] (2026-08-15 10:56Z) Rendered, checksum-verified, technically qualified, registered, and browser-played the complete 364.333-second Production v2 preview as separate episode `9d145344-82c9-46cc-b4c1-661d95f0bf56`; its human preview approval remains pending before final render and packaging.
+- [ ] Human-approve the complete v2 preview, then create and approve the final render, thumbnail, package, manifest, dry-run publish record, and recovery test without replacing v1.
 - [ ] Commit and push intentional checkpoints, obtain green CI, verify deployed/local/remote source provenance, and record exact v2 artifacts and limitations.
 
 ## Surprises & Discoveries
@@ -160,6 +161,19 @@ retained when supplied but are optional and never block editing or rendering.
   uploaded WAV duration by more than 250 ms`; local `wave` inspection exposed
   the sentinel while `ffprobe` reported the expected duration. Upload-only PCM
   rewrites now pass the same `wave` calculation for all 21 turns.
+- Observation: the corrected 21-job B1 batch completed with no failed or
+  cancelled jobs, peaked at 19,721 MiB P40 VRAM and 32,497 MiB host RAM, and
+  accumulated 2,826,928 ms of measured managed-runtime work. The complete
+  preview decodes without error, contains no silence interval of at least 1.5
+  seconds at -50 dB, and differs from its planned duration by only 30 ms.
+  Evidence: `output/production-v2/full-production/animation/manifest.json` and
+  `output/production-v2/full-production/render/qc.json`.
+- Observation: Chromium requested the registered 96,045,894-byte preview with
+  HTTP range semantics, reached ready state 4, played from 0 to 1.19 seconds
+  without an error, and loaded all 134 shifted German caption cues; at 65
+  seconds the first ChatGPT cue was active as expected after the primer.
+  Evidence: registered render asset `57547bc3-8e51-428f-9fb8-feba96a31eea`
+  and the Playwright production-page validation.
 
 ## Decision Log
 
@@ -238,6 +252,13 @@ retained when supplied but are optional and never block editing or rendering.
   Rationale: this repairs invalid streaming headers without mutating approved
   audio assets, while matching the exact duration validator used by B1.
   Date/Author: 2026-08-15 / Codex.
+- Decision: register the complete v2 preview as a separate episode with cloned
+  transcript identities, provenance-linked immutable audio, 21 new speaking
+  assets, a v3 timeline, shifted selectable captions, technical QC, and a
+  standard preview-render approval instead of attaching it to v1.
+  Rationale: the UI can review and continue the normal final/package workflow
+  while every v1 asset remains unchanged and independently recoverable.
+  Date/Author: 2026-08-15 / Codex.
 
 ## Outcomes & Retrospective
 
@@ -255,10 +276,17 @@ supersedes the first qualification without overwriting it. Its render asset is
 `647b732587ef841d1d88e71d186729d3f0b733fd364a42ad562c79f2b15bf29b`.
 The v1 final remains completed with SHA-256
 `1837df46318eba0bd0a21dc60c0d97b5c0236423476401058f3bdfd0278b3218`.
-The user approved revision 2 on 2026-08-15, and the durable gate now reads
-`approved_for_full_production`. Full v2 episode production is in progress
-through B1's managed media queue; final preview and packaging remain gated on
-QC and human review rather than inferred from automated checks.
+The user approved revision 2 on 2026-08-15, and the durable gate reads
+`approved_for_full_production`. All 21 full speaking clips completed through
+B1's managed media queue. The full preview is registered as episode
+`9d145344-82c9-46cc-b4c1-661d95f0bf56`; render asset
+`57547bc3-8e51-428f-9fb8-feba96a31eea` has SHA-256
+`cbd77b9312f27bcb99f027e02094ca8e17a55974cf1e4196820178ef3b6db8d0`,
+duration 364.333 seconds, and pending approval
+`ae9b59be-ebd8-485f-b332-6e7c4e984bfe`. Technical QC passes and the browser
+plays the exact registered asset with 134 selectable German cues. Final render,
+thumbnail, package, manifest, dry-run publication, and recovery validation
+remain correctly gated on the user's full-preview review.
 
 ## Context and Orientation
 

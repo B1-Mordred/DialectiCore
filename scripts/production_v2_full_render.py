@@ -71,6 +71,34 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _segment_fingerprint(
+    record: dict[str, Any], *, studio: Path, reel: Path
+) -> str:
+    payload = {
+        "render_policy": "production_v2_full_turn.v1",
+        "participant_id": record["participant_id"],
+        "duration_ms": record["duration_ms"],
+        "animation_sha256": record["artifact"]["downloaded_sha256"],
+        "audio_sha256": record["audio_sha256"],
+        "studio_sha256": _sha256(studio),
+        "reel_sha256": _sha256(reel),
+        "presentation_mode": _presentation_mode(int(record["index"])),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _segment_is_current(
+    record: dict[str, Any], *, studio: Path, reel: Path, output: Path
+) -> bool:
+    sidecar = output.with_suffix(".fingerprint")
+    if not output.is_file() or not sidecar.is_file():
+        return False
+    return sidecar.read_text().strip() == _segment_fingerprint(
+        record, studio=studio, reel=reel
+    )
+
+
 def _object_path(uri: str) -> Path:
     prefix = "object://dialecticore/"
     if not uri.startswith(prefix):
@@ -112,23 +140,7 @@ def _probe(path: Path) -> dict[str, Any]:
     return json.loads(completed.stdout)
 
 
-def _build_broll_reel(output: Path) -> list[dict[str, Any]]:
-    sources = [BROLL_ROOT / name for name in BROLL_FILES]
-    for source in sources:
-        if not source.is_file():
-            raise RuntimeError(f"B-roll source is missing: {source}")
-    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
-    for source_in, source in zip(BROLL_SOURCE_IN_SECONDS, sources, strict=True):
-        command.extend(
-            ["-ss", str(source_in), "-t", str(BROLL_CLIP_SECONDS), "-i", str(source)]
-        )
-    filters: list[str] = []
-    for index in range(len(sources)):
-        filters.append(
-            f"[{index}:v]scale=1280:720:force_original_aspect_ratio=increase,"
-            f"crop=1280:720,fps={FPS},setsar=1,setpts=PTS-STARTPTS[v{index}]"
-        )
-    previous = "v0"
+def _broll_clip_records(sources: list[Path]) -> list[dict[str, Any]]:
     clips: list[dict[str, Any]] = []
     step = BROLL_CLIP_SECONDS - BROLL_CROSSFADE_SECONDS
     for index, (source_in, source) in enumerate(
@@ -145,6 +157,44 @@ def _build_broll_reel(output: Path) -> list[dict[str, Any]]:
                 "crossfade_ms": round(BROLL_CROSSFADE_SECONDS * 1000),
             }
         )
+    return clips
+
+
+def _build_broll_reel(output: Path) -> list[dict[str, Any]]:
+    sources = [BROLL_ROOT / name for name in BROLL_FILES]
+    for source in sources:
+        if not source.is_file():
+            raise RuntimeError(f"B-roll source is missing: {source}")
+    clips = _broll_clip_records(sources)
+    source_fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "policy": "production_v2_broll_reel.v1",
+                "clips": clips,
+                "duration_seconds": BROLL_CLIP_SECONDS,
+                "crossfade_seconds": BROLL_CROSSFADE_SECONDS,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    sidecar = output.with_suffix(".fingerprint")
+    if output.is_file() and sidecar.is_file() and sidecar.read_text().strip() == source_fingerprint:
+        return clips
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
+    for source_in, source in zip(BROLL_SOURCE_IN_SECONDS, sources, strict=True):
+        command.extend(
+            ["-ss", str(source_in), "-t", str(BROLL_CLIP_SECONDS), "-i", str(source)]
+        )
+    filters: list[str] = []
+    for index in range(len(sources)):
+        filters.append(
+            f"[{index}:v]scale=1280:720:force_original_aspect_ratio=increase,"
+            f"crop=1280:720,fps={FPS},setsar=1,setpts=PTS-STARTPTS[v{index}]"
+        )
+    previous = "v0"
+    step = BROLL_CLIP_SECONDS - BROLL_CROSSFADE_SECONDS
+    for index in range(len(sources)):
         if index == 0:
             continue
         output_label = f"xf{index}"
@@ -175,6 +225,7 @@ def _build_broll_reel(output: Path) -> list[dict[str, Any]]:
         ]
     )
     _run(command)
+    sidecar.write_text(source_fingerprint + "\n")
     return clips
 
 
@@ -565,16 +616,25 @@ def main() -> int:
     discussion_offset = 0
     for job in jobs:
         segment = segments_dir / f"{int(job['index']):02d}-{job['participant_id']}.mp4"
-        _render_turn(
-            record=job,
-            studio=studio,
-            reel=reel,
-            start_ms=discussion_offset,
-            output=segment,
-        )
+        if _segment_is_current(job, studio=studio, reel=reel, output=segment):
+            print(f"reused {int(job['index']):02d}/21 {job['participant_id']}", flush=True)
+        else:
+            _render_turn(
+                record=job,
+                studio=studio,
+                reel=reel,
+                start_ms=discussion_offset,
+                output=segment,
+            )
+            segment.with_suffix(".fingerprint").write_text(
+                _segment_fingerprint(job, studio=studio, reel=reel) + "\n"
+            )
+            print(
+                f"rendered {int(job['index']):02d}/21 {job['participant_id']}",
+                flush=True,
+            )
         discussion_paths.append(segment)
         discussion_offset += int(job["duration_ms"])
-        print(f"rendered {int(job['index']):02d}/21 {job['participant_id']}", flush=True)
     discussion = OUTPUT_ROOT / "discussion.mp4"
     _concat_files(
         discussion_paths,

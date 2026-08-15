@@ -130,6 +130,33 @@ def _download_first_artifact(
     }
 
 
+def _update_record_from_job(record: dict[str, Any], job: dict[str, Any]) -> None:
+    record.update(
+        {
+            "state": job.get("state"),
+            "stage": job.get("stage"),
+            "progress": job.get("progress"),
+            "runtime": job.get("runtime"),
+            "telemetry": {
+                key: job.get(key)
+                for key in (
+                    "resolved_model_version",
+                    "started_at",
+                    "completed_at",
+                    "load_time_ms",
+                    "run_time_ms",
+                    "peak_vram_mib",
+                    "peak_ram_mib",
+                    "failure_category",
+                    "failure_message",
+                    "lip_sync",
+                    "performance",
+                )
+            },
+        }
+    )
+
+
 def _source_episode() -> dict[str, Any]:
     response = httpx.get(
         f"http://127.0.0.1:8000/api/v1/episodes/{SOURCE_EPISODE_ID}", timeout=60
@@ -246,16 +273,27 @@ def main() -> int:
                 continue
             response.raise_for_status()
             job = response.json()
-            record["state"] = job.get("state")
-            record["stage"] = job.get("stage")
-            record["progress"] = job.get("progress")
+            _update_record_from_job(record, job)
             if job.get("state") == "completed":
-                _download_first_artifact(client, record, job.get("artifacts") or [])
+                output_path = ROOT / record["artifact_path"]
+                local_sha256 = (
+                    _sha256(output_path.read_bytes()) if output_path.is_file() else None
+                )
+                if local_sha256 != record.get("artifact", {}).get("downloaded_sha256"):
+                    _download_first_artifact(client, record, job.get("artifacts") or [])
         _write_manifest(manifest)
 
         portrait_uploads: dict[str, dict[str, Any]] = {}
         for turn in planned_turns:
             existing = jobs_by_turn.get(turn["turn_id"])
+            if existing is not None:
+                # Older resumable records may predate upload-only WAV
+                # normalization. Preserve the exact submitted input fields, but
+                # backfill immutable canonical-audio provenance.
+                existing.setdefault("source_audio_path", turn["source_audio_path"])
+                existing.setdefault(
+                    "source_audio_sha256", turn["source_audio_sha256"]
+                )
             artifact_path = OUTPUT_ROOT / (
                 f"{turn['index']:02d}-{turn['turn_id']}-{turn['participant_id']}.mp4"
             )
@@ -345,30 +383,7 @@ def main() -> int:
                 response = client.get(f"/v1/media/jobs/{job_id}")
                 response.raise_for_status()
                 job = response.json()
-                record.update(
-                    {
-                        "state": job.get("state"),
-                        "stage": job.get("stage"),
-                        "progress": job.get("progress"),
-                        "runtime": job.get("runtime"),
-                        "telemetry": {
-                            key: job.get(key)
-                            for key in (
-                                "resolved_model_version",
-                                "started_at",
-                                "completed_at",
-                                "load_time_ms",
-                                "run_time_ms",
-                                "peak_vram_mib",
-                                "peak_ram_mib",
-                                "failure_category",
-                                "failure_message",
-                                "lip_sync",
-                                "performance",
-                            )
-                        },
-                    }
-                )
+                _update_record_from_job(record, job)
                 if job.get("state") not in TERMINAL_STATES:
                     continue
                 artifacts = job.get("artifacts") or []

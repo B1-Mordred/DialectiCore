@@ -42,6 +42,7 @@ OUTPUT_ROOT = ROOT / "output/production-v2/full-production/render"
 ANIMATION_MANIFEST = (
     ROOT / "output/production-v2/full-production/animation/manifest.json"
 )
+QC_PATH = OUTPUT_ROOT / "qc.json"
 MARKER = "dialecticore.production_v2.full_preview.v1"
 
 
@@ -112,6 +113,11 @@ def main() -> int:
     source = repo.get(SOURCE_EPISODE_ID)
     render_manifest = json.loads((OUTPUT_ROOT / "manifest.json").read_text())
     animation = json.loads(ANIMATION_MANIFEST.read_text())
+    qc_result = json.loads(QC_PATH.read_text())
+    if qc_result.get("status") != "pass":
+        raise RuntimeError(
+            f"Production v2 technical QC does not pass: {qc_result.get('failed_checks')}"
+        )
     preview_path = ROOT / render_manifest["preview"]["path"]
     preview_probe = _probe(preview_path)
     preview_checksum = f"sha256:{render_manifest['preview']['sha256']}"
@@ -381,6 +387,7 @@ def main() -> int:
         status="pass",
         score=1.0,
         details={
+            "technical_qc": qc_result,
             "full_timeline": True,
             "av_offset_ms": preview_probe["av_offset_ms"],
             "expected_duration_ms": timeline["duration_ms"],
