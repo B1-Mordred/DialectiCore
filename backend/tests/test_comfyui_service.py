@@ -2612,12 +2612,14 @@ async def test_b1_studio_panel_reuses_approved_seated_character_provenance() -> 
             "seated_reference_artifact_id": "upload_host_seated",
         }
     ]
+    assert payload["input"]["stature_reference_participant_id"] == "host"
     assert payload["input"]["camera"] == {"view": "establishing_wide", "action": "cut"}
     assert payload["input"]["width"] == 1280
     assert payload["input"]["height"] == 720
     assert isinstance(payload["input"]["seed"], int)
     assert 0 <= payload["input"]["seed"] <= 2_147_483_647
     assert metadata["studio_panel"]["requested_camera_view"] == "speaker_medium"
+    assert metadata["studio_panel"]["stature_reference_participant_id"] == "host"
     assert metadata["b1_upload_references"]["host"]["seated_reference"] == (
         "upload_host_seated"
     )

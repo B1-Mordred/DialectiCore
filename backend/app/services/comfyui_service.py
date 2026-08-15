@@ -1084,6 +1084,11 @@ class ComfyUiService:
             if str(participant_reference.get("participant_id") or "")
             in seated_character_by_participant
         ]
+        stature_reference_participant_id = (
+            "claude"
+            if "claude" in seated_character_by_participant
+            else next(iter(seating), None)
+        )
         seated_character_dependency_ids = [
             str(asset.id)
             for _, asset in sorted(
@@ -1141,6 +1146,9 @@ class ComfyUiService:
                         "speaker_participant_id": participant_id,
                         "paired_participant_ids": paired_ids,
                         "seating_plan": seating,
+                        "stature_reference_participant_id": (
+                            stature_reference_participant_id
+                        ),
                         "panel_participants": panel_participants_with_plates,
                         "depends_on_asset_ids": seated_character_dependency_ids,
                     },
@@ -3717,9 +3725,26 @@ class ComfyUiService:
             raise ValueError("studio-panel-shot has no reusable B1 studio reference")
         requested_camera_view = str(values.get("camera_view") or "speaker_medium")
         camera_view = "establishing_wide"
+        participant_ids = {
+            str(participant.get("participant_id") or "") for participant in participants
+        }
+        stature_reference_participant_id = str(
+            values.get("stature_reference_participant_id") or ""
+        ).strip()
+        if not stature_reference_participant_id:
+            stature_reference_participant_id = (
+                "claude"
+                if "claude" in participant_ids
+                else str(participants[0]["participant_id"])
+            )
+        if stature_reference_participant_id not in participant_ids:
+            raise ValueError(
+                "studio-panel-shot stature reference must name a panel participant"
+            )
         panel_input = {
             "studio_reference_artifact_id": studio_reference,
             "participants": participants,
+            "stature_reference_participant_id": stature_reference_participant_id,
             "camera": {
                 "view": camera_view,
                 "action": "cut",
@@ -3752,6 +3777,7 @@ class ComfyUiService:
                 "requested_camera_view": requested_camera_view,
                 "camera_action": "cut",
                 "camera_source": "b1_master_panel_plate",
+                "stature_reference_participant_id": stature_reference_participant_id,
                 "seating_plan": values.get("seating_plan"),
             },
             "b1_upload_references": {
