@@ -21,6 +21,15 @@ const directedTimeline: RenderGateAsset = {
   },
 };
 
+const directedTimelineV2: RenderGateAsset = {
+  ...timeline,
+  generation_metadata: {
+    timeline_json: {
+      media: { composition_policy: "studio_camera_cuts.v2" },
+    },
+  },
+};
+
 function episode(
   overrides: Partial<RenderGateEpisode> = {},
 ): RenderGateEpisode {
@@ -101,6 +110,25 @@ describe("render gates", () => {
             {
               check_type: "timeline_integrity",
               target_id: directedTimeline.id,
+              status: "pass",
+              severity: "pass",
+            },
+          ],
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("requires the same integrity gate for virtual-camera timelines", () => {
+    expect(canRenderPreview(episode({ assets: [directedTimelineV2] }))).toBe(false);
+    expect(
+      canRenderPreview(
+        episode({
+          assets: [directedTimelineV2],
+          quality_results: [
+            {
+              check_type: "timeline_integrity",
+              target_id: directedTimelineV2.id,
               status: "pass",
               severity: "pass",
             },

@@ -13629,7 +13629,10 @@ function renderPreviewBlockerMessage(episode: Episode | null): string | null {
     return blockers[0] ?? "Build the timeline before rendering.";
   }
   const timeline = latestTimelinePayload(episode);
-  if (timeline?.media?.composition_policy === "studio_camera_cuts.v1") {
+  if (
+    timeline?.media?.composition_policy === "studio_camera_cuts.v1" ||
+    timeline?.media?.composition_policy === "studio_camera_cuts.v2"
+  ) {
     const integrity = [...episode.quality_results]
       .reverse()
       .find(

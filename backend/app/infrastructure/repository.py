@@ -2063,7 +2063,10 @@ class EpisodeRepository:
                 "preview is not a full-episode review render; rebuild the timeline "
                 "and render a new preview"
             )
-        if render_asset.generation_metadata.get("composition_policy") != "studio_camera_cuts.v1":
+        if render_asset.generation_metadata.get("composition_policy") not in {
+            "studio_camera_cuts.v1",
+            "studio_camera_cuts.v2",
+        }:
             raise ValueError(
                 "preview uses the legacy full-frame composition policy; rebuild the timeline "
                 "and render a studio camera-cuts preview before approval"

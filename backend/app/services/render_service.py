@@ -5498,7 +5498,12 @@ class RenderService:
                 }
             )
         if (
-            composition_policy in {"studio_camera_cuts.v1", "seated_studio_panel.v1"}
+            composition_policy
+            in {
+                "studio_camera_cuts.v1",
+                "studio_camera_cuts.v2",
+                "seated_studio_panel.v1",
+            }
             and duration_ms is not None
         ):
             if abs(int(duration_ms) - rendered_expected_duration_ms) > timing_tolerance_ms:
@@ -5660,7 +5665,7 @@ class RenderService:
                     "issue": "render_captions_present_while_disabled",
                 }
             )
-        if composition_policy == "studio_camera_cuts.v1":
+        if composition_policy in {"studio_camera_cuts.v1", "studio_camera_cuts.v2"}:
             if int(composition.get("studio_context_segment_count") or 0) == 0:
                 issues.append(
                     {

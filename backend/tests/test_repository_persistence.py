@@ -410,7 +410,14 @@ def test_preview_approval_requires_a_full_timeline_render(tmp_path: Path) -> Non
         )
 
 
-def test_preview_approval_requires_frame_scheduled_timing(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "composition_policy",
+    ["studio_camera_cuts.v1", "studio_camera_cuts.v2"],
+)
+def test_preview_approval_requires_frame_scheduled_timing(
+    tmp_path: Path,
+    composition_policy: str,
+) -> None:
     db_path = tmp_path / "dialecticore.db"
     repo = persistent_repository(db_path)
     episode = repo.create(EpisodeCreateRequest(definition=definition()))
@@ -440,7 +447,7 @@ def test_preview_approval_requires_frame_scheduled_timing(tmp_path: Path) -> Non
         generation_metadata={
             "render_type": "preview",
             "review_scope": "full_timeline",
-            "composition_policy": "studio_camera_cuts.v1",
+            "composition_policy": composition_policy,
             "media_probe": {"fps": 24, "av_offset_ms": 0},
             "approval_status": "pending",
         },

@@ -62,7 +62,9 @@ function timelineIntegrityPasses(
     media &&
     typeof media === "object" &&
     !Array.isArray(media) &&
-    (media as Record<string, unknown>).composition_policy === "studio_camera_cuts.v1";
+    ["studio_camera_cuts.v1", "studio_camera_cuts.v2"].includes(
+      String((media as Record<string, unknown>).composition_policy),
+    );
   if (!requiresIntegrityGate) {
     return true;
   }
