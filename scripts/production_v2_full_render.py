@@ -24,10 +24,11 @@ from production_v2_integrated_qualification import (
     SCREEN_WIDTH,
     SCREEN_X,
     SCREEN_Y,
-    SEAT_CENTERS_X,
     STUDIO_URI,
-    _character_layout,
     _master_path,
+)
+from production_v2_integrated_qualification import (
+    _character_layout as _qualification_character_layout,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,6 +57,8 @@ BROLL_CLIP_SECONDS = 62.0
 BROLL_CROSSFADE_SECONDS = 1.5
 PRESENTATION_TRANSITION_SECONDS = 2.0
 FPS = 24
+FULL_SEAT_CENTERS_X = (440, 597, 754, 911, 1068, 1225)
+WIDE_CHARACTER_SCALE = 0.82
 
 
 def _run(command: list[str]) -> None:
@@ -75,7 +78,7 @@ def _segment_fingerprint(
     record: dict[str, Any], *, studio: Path, reel: Path
 ) -> str:
     payload = {
-        "render_policy": "production_v2_full_turn.v1",
+        "render_policy": "production_v2_full_turn.v2",
         "participant_id": record["participant_id"],
         "duration_ms": record["duration_ms"],
         "animation_sha256": record["artifact"]["downloaded_sha256"],
@@ -83,6 +86,9 @@ def _segment_fingerprint(
         "studio_sha256": _sha256(studio),
         "reel_sha256": _sha256(reel),
         "presentation_mode": _presentation_mode(int(record["index"])),
+        "camera_mode": _camera_mode(int(record["index"])),
+        "seat_centers_x": FULL_SEAT_CENTERS_X,
+        "wide_character_scale": WIDE_CHARACTER_SCALE,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -233,11 +239,30 @@ def _presentation_mode(turn_index: int) -> str:
     # Three deliberately sparse explainer treatments; all other dialogue keeps
     # the active speaker prominent in the studio camera.
     return {
-        1: "roundtrip",
         9: "enter",
         10: "exit",
         14: "roundtrip",
     }.get(turn_index, "rear_screen")
+
+
+def _camera_mode(turn_index: int) -> str:
+    return "establishing_wide" if turn_index in {1, 21} else "speaker_centered"
+
+
+def _full_character_layout(participant_id: str, *, wide: bool) -> dict[str, int]:
+    layout = _qualification_character_layout(participant_id)
+    original_size = layout["canvas_size"]
+    size = round(original_size * WIDE_CHARACTER_SCALE) if wide else original_size
+    scaled_alpha_height = round(
+        (layout["target_alpha_bottom"] - layout["top"]) * size / original_size
+    )
+    center_x = FULL_SEAT_CENTERS_X[PARTICIPANTS.index(participant_id)]
+    return {
+        "canvas_size": size,
+        "left": center_x - size // 2,
+        "top": layout["target_alpha_bottom"] - scaled_alpha_height,
+        "target_alpha_bottom": layout["target_alpha_bottom"],
+    }
 
 
 def _presentation_blend(mode: str, duration_ms: int) -> str:
@@ -280,6 +305,8 @@ def _render_turn(
 ) -> None:
     participant_id = record["participant_id"]
     duration_ms = int(record["duration_ms"])
+    camera_mode = _camera_mode(int(record["index"]))
+    wide = camera_mode == "establishing_wide"
     command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
     command.extend(["-loop", "1", "-i", str(studio)])
     command.extend(["-ss", f"{start_ms / 1000:.3f}", "-i", str(reel)])
@@ -312,7 +339,7 @@ def _render_turn(
     for seat_index, seated_id in enumerate(PARTICIPANTS):
         source_index = input_index
         matte_index = input_index + 1
-        layout = _character_layout(seated_id)
+        layout = _full_character_layout(seated_id, wide=wide)
         size = layout["canvas_size"]
         if seated_id == participant_id:
             filters.extend(
@@ -344,21 +371,31 @@ def _render_turn(
         [
             f"[0:v]crop=1672:{941 - DESK_TOP}:0:{DESK_TOP},format=rgba[desk]",
             f"[{previous}][desk]overlay=0:{DESK_TOP}:format=auto[studio_people]",
-            (
-                f"[studio_people]pad={1672 + CAMERA_EDGE_EXTENSION * 2}:941:"
-                f"{CAMERA_EDGE_EXTENSION}:0:color=0x070b23[extended_studio]"
-            ),
-            (
-                f"[extended_studio]crop={CAMERA_WIDTH}:{CAMERA_HEIGHT}:"
-                f"{SEAT_CENTERS_X[PARTICIPANTS.index(participant_id)]}:{CAMERA_TOP},"
-                "scale=1280:720:flags=lanczos,setsar=1,"
-                f"setpts=N/({FPS}*TB)[studio_camera]"
-            ),
-            (
-                "[1:v]scale=1280:720:force_original_aspect_ratio=increase,"
-                f"crop=1280:720,fps={FPS},setsar=1,setpts=N/({FPS}*TB)[fullscreen]"
-            ),
         ]
+    )
+    if wide:
+        filters.append(
+            "[studio_people]scale=1280:720:flags=lanczos,setsar=1,"
+            f"setpts=N/({FPS}*TB)[studio_camera]"
+        )
+    else:
+        filters.extend(
+            [
+                (
+                    f"[studio_people]pad={1672 + CAMERA_EDGE_EXTENSION * 2}:941:"
+                    f"{CAMERA_EDGE_EXTENSION}:0:color=0x070b23[extended_studio]"
+                ),
+                (
+                    f"[extended_studio]crop={CAMERA_WIDTH}:{CAMERA_HEIGHT}:"
+                    f"{FULL_SEAT_CENTERS_X[PARTICIPANTS.index(participant_id)]}:"
+                    f"{CAMERA_TOP},scale=1280:720:flags=lanczos,setsar=1,"
+                    f"setpts=N/({FPS}*TB)[studio_camera]"
+                ),
+            ]
+        )
+    filters.append(
+        "[1:v]scale=1280:720:force_original_aspect_ratio=increase,"
+        f"crop=1280:720,fps={FPS},setsar=1,setpts=N/({FPS}*TB)[fullscreen]"
     )
     mode = _presentation_mode(int(record["index"]))
     blend = _presentation_blend(mode, duration_ms)
@@ -507,20 +544,26 @@ def _timeline(
                 "animation_path": record["artifact_path"],
             }
         )
-        tracks["camera_direction"].append(
-            {
-                **base,
-                "participant_id": record["participant_id"],
-                "framing": "speaker_centered_with_neighbors",
-                "speaker_center_percent": 50,
-                "crop": {
-                    "x": SEAT_CENTERS_X[PARTICIPANTS.index(record["participant_id"])],
+        camera_mode = _camera_mode(int(record["index"]))
+        camera = {
+            **base,
+            "participant_id": record["participant_id"],
+            "framing": camera_mode,
+            "speaker_center_percent": 50 if camera_mode == "speaker_centered" else None,
+            "crop": (
+                {
+                    "x": FULL_SEAT_CENTERS_X[
+                        PARTICIPANTS.index(record["participant_id"])
+                    ],
                     "y": CAMERA_TOP,
                     "width": CAMERA_WIDTH,
                     "height": CAMERA_HEIGHT,
-                },
-            }
-        )
+                }
+                if camera_mode == "speaker_centered"
+                else {"x": 0, "y": 0, "width": 1672, "height": 941}
+            ),
+        }
+        tracks["camera_direction"].append(camera)
         mode = _presentation_mode(int(record["index"]))
         tracks["broll_presentation"].append(
             {
@@ -579,6 +622,8 @@ def _timeline(
             "broll_audio_default": "muted",
             "speaker_center_percent_range": [45, 55],
             "desk_foreground_occlusion_y": DESK_TOP,
+            "seat_centers_x": list(FULL_SEAT_CENTERS_X),
+            "establishing_wide_turns": [1, 21],
         },
     }
 

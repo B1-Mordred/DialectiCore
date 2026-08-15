@@ -29,15 +29,34 @@ def _job(index: int, participant_id: str, duration_ms: int = 10_000) -> dict[str
     }
 
 
-def test_presentation_plan_is_sparse_and_has_a_continuous_fullscreen_pair() -> None:
+def test_presentation_plan_keeps_opening_and_close_wide_in_the_studio() -> None:
     module = _module()
 
-    assert module._presentation_mode(1) == "roundtrip"
+    assert module._presentation_mode(1) == "rear_screen"
+    assert module._camera_mode(1) == "establishing_wide"
+    assert module._camera_mode(21) == "establishing_wide"
+    assert module._camera_mode(2) == "speaker_centered"
     assert module._presentation_mode(9) == "enter"
     assert module._presentation_mode(10) == "exit"
     assert module._presentation_mode(14) == "roundtrip"
     assert module._presentation_mode(2) == "rear_screen"
     assert "cos" in module._presentation_blend("roundtrip", 21_000)
+
+
+def test_full_production_seats_keep_outer_torsos_over_the_desk() -> None:
+    module = _module()
+
+    chatgpt = module._full_character_layout("chatgpt", wide=False)
+    mistral = module._full_character_layout("mistral", wide=False)
+    wide_chatgpt = module._full_character_layout("chatgpt", wide=True)
+
+    # Measured scaled alpha half-widths are 120px for ChatGPT and 107px for
+    # Mistral. The physical desk surface spans approximately x=313..1337.
+    assert module.FULL_SEAT_CENTERS_X[0] - 120 >= 313
+    assert module.FULL_SEAT_CENTERS_X[-1] + 107 <= 1337
+    assert chatgpt["left"] < mistral["left"]
+    assert wide_chatgpt["canvas_size"] < chatgpt["canvas_size"]
+    assert wide_chatgpt["target_alpha_bottom"] == chatgpt["target_alpha_bottom"]
 
 
 def test_timeline_keeps_broll_parallel_to_unbroken_dialogue() -> None:

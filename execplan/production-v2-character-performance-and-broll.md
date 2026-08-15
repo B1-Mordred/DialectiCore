@@ -41,6 +41,7 @@ retained when supplied but are optional and never block editing or rendering.
 - [x] (2026-08-15 09:49Z) Created and dry-run validated the full-production safety archive `storage/backups/dialecticore-backup-20260815T094937Z-pre-production-v2-full-20260815.tar.gz`, SHA-256 `17888466a8e427fb619c3edc43ac1a71123add966b3a23b78814b620a0af9bcd`, including 5,473 database records and 657 object-store files.
 - [x] (2026-08-15 10:51Z) Completed the resumable 21-turn full-production animation batch through the managed B1 media API. Preserved two valid first-attempt jobs, cancelled the remaining queued invalid-header jobs, normalized all upload-only WAV headers, and completed 300.377 seconds of dialogue with zero failures in the corrected batch.
 - [x] (2026-08-15 10:56Z) Rendered, checksum-verified, technically qualified, registered, and browser-played the complete 364.333-second Production v2 preview as separate episode `9d145344-82c9-46cc-b4c1-661d95f0bf56`; its human preview approval remains pending before final render and packaging.
+- [x] (2026-08-15 12:03Z) Re-composited all 21 turns without rerunning B1 animation, inset the cast over the physical desk, directed turns 1 and 21 as total-studio establishing views, passed full technical QC, registered immutable preview revision 2, and browser-verified playback plus 134 caption cues. Revision 1 remains preserved as superseded evidence.
 - [ ] Human-approve the complete v2 preview, then create and approve the final render, thumbnail, package, manifest, dry-run publish record, and recovery test without replacing v1.
 - [ ] Commit and push intentional checkpoints, obtain green CI, verify deployed/local/remote source provenance, and record exact v2 artifacts and limitations.
 
@@ -174,6 +175,13 @@ retained when supplied but are optional and never block editing or rendering.
   seconds the first ChatGPT cue was active as expected after the primer.
   Evidence: registered render asset `57547bc3-8e51-428f-9fb8-feba96a31eea`
   and the Playwright production-page validation.
+- Observation: the physical desk surface spans approximately x=313..1337 in
+  the 1672px studio plate, while revision 1 placed the outer seat centers at
+  x=350 and x=1325. Their measured scaled alpha half-widths are about 120px
+  and 107px, so both torsos visibly extend beyond the desk before the
+  rectangular foreground occlusion begins.
+  Evidence: revision-1 introduction/conclusion frames and deterministic FFmpeg
+  alpha bounding boxes from the normalized masters.
 
 ## Decision Log
 
@@ -259,8 +267,26 @@ retained when supplied but are optional and never block editing or rendering.
   Rationale: the UI can review and continue the normal final/package workflow
   while every v1 asset remains unchanged and independently recoverable.
   Date/Author: 2026-08-15 / Codex.
+- Decision: revise only composition and directing: inset the six seat centers
+  within the measured desk surface, use a slightly smaller cast scale for
+  establishing-wide shots, and direct turns 1 and 21 as total-studio views.
+  Keep the qualified B1 speaking clips, audio, primer, B-roll sources, and all
+  other speaker-centered turns unchanged.
+  Rationale: this fixes the visible torso/table contradiction and requested
+  opening/closing grammar without rerunning animation or changing identities.
+  Date/Author: 2026-08-15 / user review and Codex.
 
 ## Outcomes & Retrospective
+
+Preview revision 2 addresses the second human-review pass without changing the
+qualified character performances or dialogue audio. Its registered render asset
+is `8db5b605-53f7-4ee0-b3a6-cd334ac810cc`, checksum
+`sha256:c60a0bb25db9418712c9132b191a8cdfc8ec793a3a96f58e0c0c2f257c562c1a`,
+and approval `abf517f6-37dc-442e-97a0-40a02295ee28` remains pending. Browser
+evidence confirms a playable 364.333-second render, a 134-cue selectable German
+caption track, and total-studio opening and conclusion frames with every torso
+contained behind the desk. Revision 1's render, timeline, and approval are
+preserved and explicitly superseded rather than overwritten.
 
 Transport, normalization, animation selection, active-speaker camera policy,
 parallel directing tracks, render materialization, and the integrated

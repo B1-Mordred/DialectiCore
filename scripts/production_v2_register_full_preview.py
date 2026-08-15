@@ -39,9 +39,7 @@ from app.services.object_storage import create_object_store  # noqa: E402
 
 SOURCE_EPISODE_ID = UUID("cc1ad449-9cad-4a40-a150-652db0b7dc7a")
 OUTPUT_ROOT = ROOT / "output/production-v2/full-production/render"
-ANIMATION_MANIFEST = (
-    ROOT / "output/production-v2/full-production/animation/manifest.json"
-)
+ANIMATION_MANIFEST = ROOT / "output/production-v2/full-production/animation/manifest.json"
 QC_PATH = OUTPUT_ROOT / "qc.json"
 MARKER = "dialecticore.production_v2.full_preview.v1"
 
@@ -130,6 +128,11 @@ def main() -> int:
         ),
         None,
     )
+    revision = 1
+    is_revision = False
+    prior_render_asset_id: str | None = None
+    prior_timeline_asset_id: str | None = None
+    prior_approval_id: str | None = None
     if existing_summary is not None:
         episode = repo.get(existing_summary.id)
         control = episode.workflow_control.get("production_v2_full_preview", {})
@@ -155,7 +158,14 @@ def main() -> int:
                     )
                 )
                 return 0
-        if episode.assets or episode.transcripts:
+            if control.get("source_episode_id") != str(source.id):
+                raise RuntimeError("existing Production v2 preview has a different source")
+            revision = int(control.get("revision") or 1) + 1
+            is_revision = True
+            prior_render_asset_id = control.get("render_asset_id")
+            prior_timeline_asset_id = control.get("timeline_asset_id")
+            prior_approval_id = control.get("approval_id")
+        elif episode.assets or episode.transcripts:
             raise RuntimeError("an existing Production v2 episode has incompatible content")
     else:
         definition = source.definition.model_copy(deep=True)
@@ -172,116 +182,148 @@ def main() -> int:
     source_transcript = next(
         item for item in source.transcripts if item.id == source.canonical_transcript_version_id
     )
-    transcript = TranscriptVersion(
-        episode_id=episode.id,
-        type=source_transcript.type,
-        language=source_transcript.language,
-        status="approved",
-        semantic_fidelity_score=source_transcript.semantic_fidelity_score,
-        localization_metadata={
-            **source_transcript.localization_metadata,
-            "source_episode_id": str(source.id),
-            "source_transcript_version_id": str(source_transcript.id),
-            "production_v2_copy": True,
-        },
-    )
-    turn_ids: dict[str, str] = {}
-    for source_turn in source_transcript.turns:
-        turn = TranscriptTurn(
-            transcript_version_id=transcript.id,
-            source_discussion_turn_ids=source_turn.source_discussion_turn_ids,
-            speaker_participant_id=source_turn.speaker_participant_id,
-            turn_type=source_turn.turn_type,
-            text=source_turn.text,
-            edit_type=source_turn.edit_type,
-            semantic_difference_score=source_turn.semantic_difference_score,
-            claims=source_turn.claims,
-            pronunciation_markup=source_turn.pronunciation_markup,
-            status="approved",
+    if is_revision:
+        transcript = next(
+            item
+            for item in episode.transcripts
+            if item.id == episode.canonical_transcript_version_id
         )
-        transcript.turns.append(turn)
-        turn_ids[str(source_turn.id)] = str(turn.id)
-    episode.transcripts.append(transcript)
-    episode.canonical_transcript_version_id = transcript.id
-
-    source_audio_by_turn = {
-        asset.source_entity_id: asset
-        for asset in source.assets
-        if asset.asset_type == AssetType.audio
-        and asset.status == "completed"
-        and asset.generation_metadata.get("transcript_version_id")
-        == str(source_transcript.id)
-    }
-    audio_ids: dict[str, str] = {}
-    for source_turn_id, new_turn_id in turn_ids.items():
-        source_audio = source_audio_by_turn[source_turn_id]
-        audio = Asset(
+        if len(transcript.turns) != len(source_transcript.turns):
+            raise RuntimeError("registered Production v2 transcript no longer matches source")
+        turn_ids = {
+            str(source_turn.id): str(turn.id)
+            for source_turn, turn in zip(source_transcript.turns, transcript.turns, strict=True)
+        }
+    else:
+        transcript = TranscriptVersion(
             episode_id=episode.id,
-            asset_type=AssetType.audio,
-            language=source_audio.language,
-            source_entity_type="transcript_turn",
-            source_entity_id=new_turn_id,
-            storage_uri=source_audio.storage_uri,
-            mime_type=source_audio.mime_type,
-            duration_ms=source_audio.duration_ms,
-            checksum=source_audio.checksum,
-            status="completed",
-            generation_metadata={
-                **source_audio.generation_metadata,
-                "transcript_version_id": str(transcript.id),
+            type=source_transcript.type,
+            language=source_transcript.language,
+            status="approved",
+            semantic_fidelity_score=source_transcript.semantic_fidelity_score,
+            localization_metadata={
+                **source_transcript.localization_metadata,
                 "source_episode_id": str(source.id),
-                "source_asset_id": str(source_audio.id),
-                "shared_immutable_audio": True,
+                "source_transcript_version_id": str(source_transcript.id),
+                "production_v2_copy": True,
             },
         )
-        episode.assets.append(audio)
-        audio_ids[str(source_audio.id)] = str(audio.id)
+        turn_ids = {}
+        for source_turn in source_transcript.turns:
+            turn = TranscriptTurn(
+                transcript_version_id=transcript.id,
+                source_discussion_turn_ids=source_turn.source_discussion_turn_ids,
+                speaker_participant_id=source_turn.speaker_participant_id,
+                turn_type=source_turn.turn_type,
+                text=source_turn.text,
+                edit_type=source_turn.edit_type,
+                semantic_difference_score=source_turn.semantic_difference_score,
+                claims=source_turn.claims,
+                pronunciation_markup=source_turn.pronunciation_markup,
+                status="approved",
+            )
+            transcript.turns.append(turn)
+            turn_ids[str(source_turn.id)] = str(turn.id)
+        episode.transcripts.append(transcript)
+        episode.canonical_transcript_version_id = transcript.id
 
     object_store = create_object_store(settings)
-    speaking_ids: dict[str, str] = {}
-    for job in animation["jobs"]:
-        source_path = ROOT / job["artifact_path"]
-        stored = object_store.put_bytes(
-            key=(
-                f"production-v2/full/{episode.id}/speaking/"
-                f"{int(job['index']):02d}-{job['participant_id']}.mp4"
-            ),
-            payload=source_path.read_bytes(),
-            content_type="video/mp4",
-        )
-        speaking = Asset(
-            episode_id=episode.id,
-            asset_type=AssetType.video,
-            source_entity_type="transcript_turn",
-            source_entity_id=turn_ids[job["turn_id"]],
-            storage_uri=stored.uri,
-            mime_type=stored.content_type,
-            duration_ms=int(job["duration_ms"]),
-            width=1024,
-            height=1024,
-            fps=12,
-            checksum=stored.checksum,
-            status="completed",
-            generation_metadata={
-                "visual_role": "production_v2_speaking_character",
-                "participant_id": job["participant_id"],
-                "b1_job_id": job["job_id"],
-                "b1_runtime": job.get("runtime"),
-                "b1_telemetry": job.get("telemetry"),
-                "source_audio_asset_id": job["audio_asset_id"],
-                "source_audio_sha256": job["source_audio_sha256"],
-                "upload_audio_sha256": job["audio_sha256"],
-                "animation_input_policy": (
-                    "detector_source_crop"
-                    if job["participant_id"] == "deepseek"
-                    else "normalized_seated_master"
+    if is_revision:
+        audio_ids = {
+            str(asset.generation_metadata["source_asset_id"]): str(asset.id)
+            for asset in episode.assets
+            if asset.asset_type == AssetType.audio
+            and asset.status == "completed"
+            and asset.generation_metadata.get("source_asset_id")
+        }
+        speaking_by_turn = {
+            asset.source_entity_id: asset
+            for asset in episode.assets
+            if asset.asset_type == AssetType.video
+            and asset.status == "completed"
+            and asset.generation_metadata.get("visual_role") == "production_v2_speaking_character"
+        }
+        speaking_ids = {
+            f"{int(job['index']):02d}": str(speaking_by_turn[turn_ids[job["turn_id"]]].id)
+            for job in animation["jobs"]
+        }
+    else:
+        source_audio_by_turn = {
+            asset.source_entity_id: asset
+            for asset in source.assets
+            if asset.asset_type == AssetType.audio
+            and asset.status == "completed"
+            and asset.generation_metadata.get("transcript_version_id") == str(source_transcript.id)
+        }
+        audio_ids = {}
+        for source_turn_id, new_turn_id in turn_ids.items():
+            source_audio = source_audio_by_turn[source_turn_id]
+            audio = Asset(
+                episode_id=episode.id,
+                asset_type=AssetType.audio,
+                language=source_audio.language,
+                source_entity_type="transcript_turn",
+                source_entity_id=new_turn_id,
+                storage_uri=source_audio.storage_uri,
+                mime_type=source_audio.mime_type,
+                duration_ms=source_audio.duration_ms,
+                checksum=source_audio.checksum,
+                status="completed",
+                generation_metadata={
+                    **source_audio.generation_metadata,
+                    "transcript_version_id": str(transcript.id),
+                    "source_episode_id": str(source.id),
+                    "source_asset_id": str(source_audio.id),
+                    "shared_immutable_audio": True,
+                },
+            )
+            episode.assets.append(audio)
+            audio_ids[str(source_audio.id)] = str(audio.id)
+
+        speaking_ids = {}
+        for job in animation["jobs"]:
+            source_path = ROOT / job["artifact_path"]
+            stored = object_store.put_bytes(
+                key=(
+                    f"production-v2/full/{episode.id}/speaking/"
+                    f"{int(job['index']):02d}-{job['participant_id']}.mp4"
                 ),
-                "object_storage_path": str(stored.path),
-                "scheduler_managed": True,
-            },
-        )
-        episode.assets.append(speaking)
-        speaking_ids[f"{int(job['index']):02d}"] = str(speaking.id)
+                payload=source_path.read_bytes(),
+                content_type="video/mp4",
+            )
+            speaking = Asset(
+                episode_id=episode.id,
+                asset_type=AssetType.video,
+                source_entity_type="transcript_turn",
+                source_entity_id=turn_ids[job["turn_id"]],
+                storage_uri=stored.uri,
+                mime_type=stored.content_type,
+                duration_ms=int(job["duration_ms"]),
+                width=1024,
+                height=1024,
+                fps=12,
+                checksum=stored.checksum,
+                status="completed",
+                generation_metadata={
+                    "visual_role": "production_v2_speaking_character",
+                    "participant_id": job["participant_id"],
+                    "b1_job_id": job["job_id"],
+                    "b1_runtime": job.get("runtime"),
+                    "b1_telemetry": job.get("telemetry"),
+                    "source_audio_asset_id": job["audio_asset_id"],
+                    "source_audio_sha256": job["source_audio_sha256"],
+                    "upload_audio_sha256": job["audio_sha256"],
+                    "animation_input_policy": (
+                        "detector_source_crop"
+                        if job["participant_id"] == "deepseek"
+                        else "normalized_seated_master"
+                    ),
+                    "object_storage_path": str(stored.path),
+                    "scheduler_managed": True,
+                },
+            )
+            episode.assets.append(speaking)
+            speaking_ids[f"{int(job['index']):02d}"] = str(speaking.id)
 
     source_timeline = json.loads((ROOT / render_manifest["timeline"]["path"]).read_text())
     timeline = _remap_timeline(
@@ -292,8 +334,9 @@ def main() -> int:
     )
     timeline["duration_ms"] = int(preview_probe["duration_ms"])
     timeline_payload = json.dumps(timeline, indent=2, sort_keys=True).encode()
+    revision_prefix = f"revision-{revision}/" if revision > 1 else ""
     stored_timeline = object_store.put_bytes(
-        key=f"production-v2/full/{episode.id}/timeline-v3.json",
+        key=f"production-v2/full/{episode.id}/{revision_prefix}timeline-v3.json",
         payload=timeline_payload,
         content_type="application/vnd.dialecticore.timeline+json",
     )
@@ -311,41 +354,73 @@ def main() -> int:
         generation_metadata={
             "timeline_json": timeline,
             "schema_version": timeline["schema_version"],
-            "composition_policy": "studio_camera_cuts.v1",
+            "composition_policy": "studio_camera_cuts.v2",
+            "revision": revision,
             "source_timeline_sha256": render_manifest["timeline"]["sha256"],
             "object_storage_path": str(stored_timeline.path),
         },
     )
     episode.assets.append(timeline_asset)
 
-    subtitle_path = ROOT / render_manifest["subtitle"]["path"]
-    stored_subtitle = object_store.put_bytes(
-        key=f"production-v2/full/{episode.id}/subtitles/de.vtt",
-        payload=subtitle_path.read_bytes(),
-        content_type="text/vtt",
-    )
-    subtitle_asset = Asset(
-        episode_id=episode.id,
-        asset_type=AssetType.subtitle,
-        language="de",
-        source_entity_type="transcript_version",
-        source_entity_id=str(transcript.id),
-        storage_uri=stored_subtitle.uri,
-        mime_type=stored_subtitle.content_type,
-        duration_ms=int(preview_probe["duration_ms"]),
-        checksum=stored_subtitle.checksum,
-        status="completed",
-        generation_metadata={
-            "format": "vtt",
-            "transcript_version_id": str(transcript.id),
-            "timeline_offset_ms": render_manifest["subtitle"]["offset_ms"],
-            "object_storage_path": str(stored_subtitle.path),
-        },
-    )
-    episode.assets.append(subtitle_asset)
+    if is_revision:
+        subtitle_asset = next(
+            asset for asset in episode.assets if str(asset.id) == control.get("subtitle_asset_id")
+        )
+    else:
+        subtitle_path = ROOT / render_manifest["subtitle"]["path"]
+        stored_subtitle = object_store.put_bytes(
+            key=f"production-v2/full/{episode.id}/subtitles/de.vtt",
+            payload=subtitle_path.read_bytes(),
+            content_type="text/vtt",
+        )
+        subtitle_asset = Asset(
+            episode_id=episode.id,
+            asset_type=AssetType.subtitle,
+            language="de",
+            source_entity_type="transcript_version",
+            source_entity_id=str(transcript.id),
+            storage_uri=stored_subtitle.uri,
+            mime_type=stored_subtitle.content_type,
+            duration_ms=int(preview_probe["duration_ms"]),
+            checksum=stored_subtitle.checksum,
+            status="completed",
+            generation_metadata={
+                "format": "vtt",
+                "transcript_version_id": str(transcript.id),
+                "timeline_offset_ms": render_manifest["subtitle"]["offset_ms"],
+                "object_storage_path": str(stored_subtitle.path),
+            },
+        )
+        episode.assets.append(subtitle_asset)
+
+    if prior_timeline_asset_id:
+        prior_timeline = next(
+            asset for asset in episode.assets if str(asset.id) == prior_timeline_asset_id
+        )
+        prior_timeline.status = "replaced"
+        prior_timeline.updated_at = datetime.now(UTC)
+    if prior_render_asset_id:
+        prior_render = next(
+            asset for asset in episode.assets if str(asset.id) == prior_render_asset_id
+        )
+        prior_render.status = "replaced"
+        prior_render.generation_metadata["approval_status"] = "superseded"
+        prior_render.generation_metadata["superseded_by_revision"] = revision
+        prior_render.updated_at = datetime.now(UTC)
+    if prior_approval_id:
+        prior_approval = next(
+            approval for approval in episode.approvals if str(approval.id) == prior_approval_id
+        )
+        if prior_approval.decision == "pending":
+            prior_approval.decision = "rejected"
+            prior_approval.comment = (
+                "Superseded after human review: keep outer torsos behind the desk and "
+                "use total-studio views for the participant introduction and conclusion."
+            )
+            prior_approval.user_id = "codex"
 
     stored_preview = object_store.put_bytes(
-        key=f"production-v2/full/{episode.id}/preview.mp4",
+        key=f"production-v2/full/{episode.id}/{revision_prefix}preview.mp4",
         payload=preview_path.read_bytes(),
         content_type="video/mp4",
     )
@@ -366,7 +441,8 @@ def main() -> int:
         generation_metadata={
             "render_type": "preview",
             "review_scope": "full_timeline",
-            "composition_policy": "studio_camera_cuts.v1",
+            "composition_policy": "studio_camera_cuts.v2",
+            "revision": revision,
             "production_v2": True,
             "render_manifest": render_manifest,
             "media_probe": preview_probe,
@@ -422,6 +498,10 @@ def main() -> int:
         "render_asset_id": str(preview_asset.id),
         "approval_id": str(approval.id),
         "status": "pending_review",
+        "revision": revision,
+        "supersedes_render_asset_id": prior_render_asset_id,
+        "supersedes_timeline_asset_id": prior_timeline_asset_id,
+        "supersedes_approval_id": prior_approval_id,
         "v1_assets_modified": False,
         "created_at": datetime.now(UTC).isoformat(),
     }
@@ -440,6 +520,13 @@ def main() -> int:
                 "animation_turn_count": len(animation["jobs"]),
                 "managed_b1_jobs": True,
                 "v1_assets_modified": False,
+                "revision": revision,
+                "supersedes_render_asset_id": prior_render_asset_id,
+                "review_corrections": [
+                    "outer_seats_inset_over_desk",
+                    "opening_total_studio_view",
+                    "conclusion_total_studio_view",
+                ],
             },
         )
     )
@@ -452,6 +539,7 @@ def main() -> int:
                 "render_asset_id": str(preview_asset.id),
                 "approval_id": str(approval.id),
                 "preview_checksum": preview_asset.checksum,
+                "revision": revision,
                 "created": True,
             },
             indent=2,
