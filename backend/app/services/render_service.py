@@ -210,6 +210,11 @@ class RenderService:
             self._ensure_timeline_integrity_passes(episode, timeline_asset)
             self._ensure_studio_camera_renderable(episode, timeline)
         render_timeline = self._timeline_render_view(timeline)
+        qualification_slice: dict | None = None
+        if request.review_scope == "qualification_slice":
+            render_timeline, qualification_slice = self._qualification_timeline_slice(
+                render_timeline
+            )
         existing = self._latest_render_asset(episode, timeline_asset, request, preset)
         queued_asset = self._queued_render_asset(
             episode,
@@ -255,6 +260,17 @@ class RenderService:
             request=request,
             render_id=render_id,
         )
+        if qualification_slice is not None:
+            manifest["qualification_slice"] = qualification_slice
+            thumbnail_source = manifest.get("branded_thumbnail_source")
+            if isinstance(thumbnail_source, dict):
+                programme_seek_ms = int(thumbnail_source.get("frame_seek_ms") or 0)
+                thumbnail_source["programme_frame_seek_ms"] = programme_seek_ms
+                thumbnail_source["frame_seek_ms"] = max(
+                    0, programme_seek_ms - qualification_slice["programme_start_ms"]
+                )
+                thumbnail_source["intro_start_ms"] = 0
+                thumbnail_source["intro_end_ms"] = qualification_slice["duration_ms"]
         if isinstance(render_timeline.get("render_materialization"), dict):
             manifest["parallel_track_render_view"] = render_timeline["render_materialization"]
         manifest_payload = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")
@@ -469,7 +485,7 @@ class RenderService:
             }
 
     def _timeline_render_view(self, timeline: dict) -> dict:
-        """Materialize parallel B-roll only for the FFmpeg render boundary.
+        """Materialize parallel directing clips only at the FFmpeg boundary.
 
         The persisted v3 timeline retains one uninterrupted dialogue segment.
         Rendering may divide that interval at presentation boundaries, while
@@ -482,7 +498,13 @@ class RenderService:
         presentation_clips = [
             clip for clip in tracks.get("broll_presentation", []) if isinstance(clip, dict)
         ]
-        if not content_clips or not presentation_clips:
+        screen_clips = [
+            clip for clip in tracks.get("screen_graphics", []) if isinstance(clip, dict)
+        ]
+        camera_clips = [
+            clip for clip in tracks.get("camera_direction", []) if isinstance(clip, dict)
+        ]
+        if not presentation_clips and not screen_clips and not camera_clips:
             return timeline
         content_by_id = {str(clip.get("id")): clip for clip in content_clips if clip.get("id")}
         render_segments: list[dict] = []
@@ -491,20 +513,42 @@ class RenderService:
                 continue
             segment_start = int(segment.get("start_ms") or 0)
             segment_end = int(segment.get("end_ms") or 0)
-            overlapping = [
+            overlapping_presentations = [
                 clip
                 for clip in presentation_clips
                 if int(clip.get("start_ms") or 0) < segment_end
                 and int(clip.get("end_ms") or 0) > segment_start
                 and str(clip.get("linked_segment_id") or "") in {"", str(segment.get("id") or "")}
             ]
-            if not overlapping:
+            overlapping_graphics = [
+                clip
+                for clip in screen_clips
+                if int(clip.get("start_ms") or 0) < segment_end
+                and int(clip.get("end_ms") or 0) > segment_start
+                and str(clip.get("linked_segment_id") or "")
+                in {"", str(segment.get("id") or "")}
+            ]
+            overlapping_cameras = [
+                clip
+                for clip in camera_clips
+                if int(clip.get("start_ms") or 0) < segment_end
+                and int(clip.get("end_ms") or 0) > segment_start
+                and str(clip.get("linked_segment_id") or "")
+                in {"", str(segment.get("id") or "")}
+            ]
+            all_overlapping = [
+                *overlapping_presentations,
+                *overlapping_graphics,
+                *overlapping_cameras,
+            ]
+            if not all_overlapping:
                 render_segments.append(segment)
                 continue
             boundaries = {segment_start, segment_end}
-            for clip in overlapping:
+            for clip in all_overlapping:
                 boundaries.add(max(segment_start, int(clip.get("start_ms") or 0)))
                 boundaries.add(min(segment_end, int(clip.get("end_ms") or 0)))
+            for clip in overlapping_presentations:
                 for keyframe in clip.get("keyframes", []):
                     if isinstance(keyframe, dict):
                         time_ms = int(keyframe.get("time_ms") or 0)
@@ -516,10 +560,10 @@ class RenderService:
             ):
                 if piece_end <= piece_start:
                     continue
-                active = next(
+                active_presentation = next(
                     (
                         clip
-                        for clip in overlapping
+                        for clip in overlapping_presentations
                         if int(clip.get("start_ms") or 0) <= piece_start
                         and int(clip.get("end_ms") or 0) >= piece_end
                     ),
@@ -531,26 +575,225 @@ class RenderService:
                     start_ms=piece_start,
                     end_ms=piece_end,
                 )
-                if active is not None:
-                    content = content_by_id.get(str(active.get("content_clip_id") or ""))
+                if active_presentation is not None:
+                    content = content_by_id.get(
+                        str(active_presentation.get("content_clip_id") or "")
+                    )
                     if content is not None:
                         piece = self._apply_parallel_broll_to_piece(
                             piece=piece,
-                            presentation=active,
+                            presentation=active_presentation,
                             content=content,
                             piece_start_ms=piece_start,
                         )
+                active_graphic = next(
+                    (
+                        clip
+                        for clip in overlapping_graphics
+                        if int(clip.get("start_ms") or 0) <= piece_start
+                        and int(clip.get("end_ms") or 0) >= piece_end
+                    ),
+                    None,
+                )
+                if active_graphic is not None:
+                    piece = self._apply_screen_graphic_to_piece(piece, active_graphic)
+                active_camera = next(
+                    (
+                        clip
+                        for clip in overlapping_cameras
+                        if int(clip.get("start_ms") or 0) <= piece_start
+                        and int(clip.get("end_ms") or 0) >= piece_end
+                    ),
+                    None,
+                )
+                if active_camera is not None:
+                    piece = self._apply_camera_clip_to_piece(piece, active_camera)
                 render_segments.append(piece)
         return {
             **timeline,
             "segments": render_segments,
             "render_materialization": {
-                "schema_version": "dialecticore.parallel_track_render_view.v1",
+                "schema_version": "dialecticore.parallel_track_render_view.v2",
                 "source_segment_count": len(timeline.get("segments", [])),
                 "render_segment_count": len(render_segments),
                 "broll_content_clip_count": len(content_clips),
                 "broll_presentation_clip_count": len(presentation_clips),
+                "screen_graphics_clip_count": len(screen_clips),
+                "camera_direction_clip_count": len(camera_clips),
                 "source_clock_preserved": True,
+            },
+        }
+
+    @staticmethod
+    def _qualification_timeline_slice(timeline: dict) -> tuple[dict, dict]:
+        tracks = timeline.get("tracks") if isinstance(timeline.get("tracks"), dict) else {}
+        markers = [
+            clip
+            for clip in tracks.get("screen_graphics", [])
+            if isinstance(clip, dict)
+            and clip.get("kind") == "show_identity"
+            and clip.get("thumbnail_candidate") is True
+        ]
+        if len(markers) != 1:
+            raise ValueError(
+                "qualification slice requires exactly one branded participant introduction"
+            )
+        marker = markers[0]
+        slice_start = int(marker.get("start_ms") or 0)
+        slice_end = int(marker.get("end_ms") or 0)
+        if slice_end <= slice_start:
+            raise ValueError("qualification slice has an invalid programme range")
+
+        sliced_segments: list[dict] = []
+        for segment in timeline.get("segments", []):
+            if not isinstance(segment, dict):
+                continue
+            segment_start = int(segment.get("start_ms") or 0)
+            segment_end = int(segment.get("end_ms") or 0)
+            clipped_start = max(segment_start, slice_start)
+            clipped_end = min(segment_end, slice_end)
+            if clipped_end <= clipped_start:
+                continue
+            source_delta = clipped_start - segment_start
+            duration_ms = clipped_end - clipped_start
+            piece = {
+                **segment,
+                "start_ms": clipped_start - slice_start,
+                "end_ms": clipped_end - slice_start,
+                "duration_ms": duration_ms,
+                "audio_source_offset_ms": int(
+                    segment.get("audio_source_offset_ms") or 0
+                )
+                + source_delta,
+            }
+            if segment.get("source_start_ms") is not None:
+                source_start_ms = int(segment.get("source_start_ms") or 0) + source_delta
+                piece["source_start_ms"] = source_start_ms
+                piece["source_end_ms"] = source_start_ms + duration_ms
+            sliced_segments.append(piece)
+        if not sliced_segments:
+            raise ValueError("qualification slice contains no renderable segment")
+
+        sliced_tracks: dict[str, list | object] = {}
+        for track_name, raw_clips in tracks.items():
+            if not isinstance(raw_clips, list):
+                sliced_tracks[track_name] = raw_clips
+                continue
+            sliced_clips: list[dict] = []
+            for clip in raw_clips:
+                if not isinstance(clip, dict):
+                    continue
+                clip_start = int(clip.get("start_ms") or 0)
+                clip_end = int(clip.get("end_ms") or 0)
+                clipped_start = max(clip_start, slice_start)
+                clipped_end = min(clip_end, slice_end)
+                if clipped_end <= clipped_start:
+                    continue
+                source_delta = clipped_start - clip_start
+                rebased = {
+                    **clip,
+                    "start_ms": clipped_start - slice_start,
+                    "end_ms": clipped_end - slice_start,
+                    "duration_ms": clipped_end - clipped_start,
+                }
+                if clip.get("source_in_ms") is not None:
+                    rebased["source_in_ms"] = int(clip.get("source_in_ms") or 0) + source_delta
+                    rebased["source_out_ms"] = (
+                        rebased["source_in_ms"] + clipped_end - clipped_start
+                    )
+                sliced_clips.append(rebased)
+            sliced_tracks[track_name] = sliced_clips
+
+        duration_ms = slice_end - slice_start
+        return (
+            {
+                **timeline,
+                "duration_ms": duration_ms,
+                "segments": sliced_segments,
+                "tracks": sliced_tracks,
+                "review_scope": "qualification_slice",
+            },
+            {
+                "schema_version": "dialecticore.render_qualification_slice.v1",
+                "kind": "branded_participant_introduction",
+                "programme_start_ms": slice_start,
+                "programme_end_ms": slice_end,
+                "duration_ms": duration_ms,
+                "screen_graphics_clip_id": marker.get("id"),
+                "source_segment_count": len(timeline.get("segments", [])),
+                "render_segment_count": len(sliced_segments),
+            },
+        )
+
+    @staticmethod
+    def _apply_screen_graphic_to_piece(piece: dict, graphic: dict) -> dict:
+        asset_id = str(graphic.get("asset_id") or "")
+        if not asset_id:
+            return piece
+        base_layers = [
+            layer
+            for layer in piece.get("visual_layers", [])
+            if isinstance(layer, dict) and layer.get("role") != "wall_screen_broll"
+        ]
+        layer = {
+            "role": "wall_screen_broll",
+            "asset_id": asset_id,
+            "purpose": "branded_show_identity",
+            "screen_graphics_clip_id": graphic.get("id"),
+        }
+        return {
+            **piece,
+            "show_identity_slate_asset_id": asset_id,
+            "wall_screen_visual_asset_id": asset_id,
+            "secondary_visual_asset_id": asset_id,
+            "visual_layers": [*base_layers, layer],
+            "screen_graphic": {
+                "kind": graphic.get("kind"),
+                "clip_id": graphic.get("id"),
+                "asset_id": asset_id,
+                "thumbnail_candidate": graphic.get("thumbnail_candidate") is True,
+            },
+        }
+
+    @staticmethod
+    def _apply_camera_clip_to_piece(piece: dict, camera: dict) -> dict:
+        action = str(camera.get("action") or "cut")
+        view = str(camera.get("view") or piece.get("camera_view") or "speaker_medium")
+        direction = piece.get("direction") if isinstance(piece.get("direction"), dict) else {}
+        updated = {
+            **piece,
+            "camera_view": view,
+            "camera_action": action,
+            "camera_clip_id": camera.get("id"),
+            "direction": {
+                **direction,
+                "view": view,
+                "action": action,
+                "angle_id": camera.get("angle_id") or "frontal",
+                "from_participant_id": camera.get("from_participant_id"),
+                "target_participant_id": camera.get("target_participant_id"),
+                "easing": camera.get("easing") or "ease_in_out",
+            },
+        }
+        plate_asset_id = str(camera.get("camera_plate_asset_id") or "")
+        if not plate_asset_id:
+            return updated
+        return {
+            **updated,
+            "segment_type": "studio_alternate_camera_plate",
+            "video_asset_id": plate_asset_id,
+            "visual_role": "studio_scene",
+            "visual_layers": [
+                {
+                    "role": "studio_scene",
+                    "asset_id": plate_asset_id,
+                    "purpose": "approved_alternate_camera_plate",
+                    "camera_clip_id": camera.get("id"),
+                }
+            ],
+            "direction": {
+                **updated["direction"],
+                "speaker_mouth_mode": "off_camera_dialogue",
             },
         }
 
@@ -594,7 +837,11 @@ class RenderService:
         asset_id = str(content.get("asset_id") or "")
         if not asset_id:
             return piece
-        state = "rear_screen"
+        state = (
+            "fullscreen"
+            if str(presentation.get("mode") or "rear_screen") == "fullscreen"
+            else "rear_screen"
+        )
         active_keyframe: dict | None = None
         for keyframe in sorted(
             (item for item in presentation.get("keyframes", []) if isinstance(item, dict)),
@@ -808,6 +1055,12 @@ class RenderService:
         render_path = self._path_for_asset(render_asset)
         thumbnail_id = str(uuid4())
         seek_seconds = self._thumbnail_seek_seconds(render_asset)
+        render_manifest = render_asset.generation_metadata.get("render_manifest")
+        thumbnail_source = (
+            render_manifest.get("branded_thumbnail_source")
+            if isinstance(render_manifest, dict)
+            else None
+        )
         thumbnail_bytes = self._thumbnail_bytes(
             render_path,
             seek_seconds=seek_seconds,
@@ -840,6 +1093,7 @@ class RenderService:
                 "storage_backend": stored_thumbnail.backend,
                 "media_probe": probe,
                 "frame_seek_seconds": seek_seconds,
+                "branded_thumbnail_source": thumbnail_source,
                 "average_luma": average_luma,
             },
         )
@@ -1112,6 +1366,14 @@ class RenderService:
             for value in segment.get("citation_overlay_asset_ids", []):
                 if isinstance(value, str):
                     source_asset_ids.add(value)
+        tracks = timeline.get("tracks") if isinstance(timeline.get("tracks"), dict) else {}
+        for track_name in ("screen_graphics", "broll_content", "camera_direction"):
+            for clip in tracks.get(track_name, []):
+                if not isinstance(clip, dict):
+                    continue
+                for key in ("asset_id", "camera_plate_asset_id"):
+                    if isinstance(clip.get(key), str):
+                        source_asset_ids.add(clip[key])
         configured_studio_references = sorted(
             {
                 str(segment.get("studio_reference_image_uri"))
@@ -1149,6 +1411,7 @@ class RenderService:
             render_type=request.render_type,
             preset=preset,
         )
+        thumbnail_source = self._branded_thumbnail_source(timeline, asset_by_id)
         return {
             "id": render_id,
             "schema_version": "render_manifest.v2",
@@ -1167,6 +1430,7 @@ class RenderService:
             ),
             "composition": composition,
             "composition_policy": "studio_camera_cuts.v1",
+            "branded_thumbnail_source": thumbnail_source,
             "normalization": {
                 "video": {
                     "width": preset.width,
@@ -4107,7 +4371,14 @@ class RenderService:
             return None
         view = str(direction.get("view") or segment.get("camera_view") or "establishing_wide")
         action = str(direction.get("action") or segment.get("camera_action") or "cut")
-        motion_actions = {"fly_in", "slow_push", "slow_pull", "pan_left", "pan_right"}
+        motion_actions = {
+            "fly_in",
+            "slow_push",
+            "slow_pull",
+            "pan_left",
+            "pan_right",
+            "pan_to_participant",
+        }
         if view == "establishing_wide" and action not in motion_actions:
             return None
         primary = asset_by_id.get(str(segment.get("video_asset_id") or ""))
@@ -4127,6 +4398,10 @@ class RenderService:
         if not isinstance(shot_plan, dict):
             shot_plan = {}
         speaker_id = str(segment.get("speaker_id") or "")
+        target_participant_id = str(direction.get("target_participant_id") or "")
+        from_participant_id = str(
+            direction.get("from_participant_id") or speaker_id or ""
+        )
         paired_ids = shot_plan.get("paired_participant_ids")
         participant_ids = [speaker_id] if speaker_id else []
         if isinstance(paired_ids, list):
@@ -4136,9 +4411,12 @@ class RenderService:
                 if isinstance(participant_id, str) and participant_id
             )
         scene = asset_by_id.get(str(segment.get("studio_panel_scene_asset_id") or ""))
+        focus_participant_ids = participant_ids
+        if action == "pan_to_participant" and target_participant_id:
+            focus_participant_ids = [from_participant_id, target_participant_id]
         positions = self._seated_panel_focus_positions(
             scene=scene,
-            participant_ids=participant_ids,
+            participant_ids=focus_participant_ids,
             seating_plan=shot_plan.get("seating_plan"),
         )
         # Speaker shots are composed around the active speaker.  A paired
@@ -4146,7 +4424,8 @@ class RenderService:
         # the speaker land at the edge of the crop and can make the silent face
         # more prominent.  Preserve the pair in metadata while anchoring the
         # camera on the first (speaker) position.
-        focus_x, focus_y = positions[0]
+        focus_x, focus_y = positions[-1] if action == "pan_to_participant" else positions[0]
+        focus_start_x, focus_start_y = positions[0]
         scale_by_view = {
             "establishing_wide": 1.0,
             "panel_two_shot": 1.24,
@@ -4174,6 +4453,10 @@ class RenderService:
             "speaker_participant_id": speaker_id or None,
             "context_participant_ids": normalized_pair_ids,
             "motion": action if action in motion_actions else None,
+            "focus_start_x": round(min(0.96, max(0.04, focus_start_x)), 5),
+            "focus_start_y": round(min(0.92, max(0.08, focus_start_y)), 5),
+            "target_participant_id": target_participant_id or None,
+            "easing": direction.get("easing") or "ease_in_out",
             "framing_policy": {
                 "speaker_target_frame_x": 0.5,
                 "speaker_allowed_frame_x": [0.45, 0.55],
@@ -4292,12 +4575,30 @@ class RenderService:
         focus_x = min(0.96, max(0.04, focus_x))
         focus_y = min(0.92, max(0.08, focus_y))
         motion = str(virtual_camera.get("motion") or "")
-        if motion in {"fly_in", "slow_push", "slow_pull", "pan_left", "pan_right"}:
+        if motion in {
+            "fly_in",
+            "slow_push",
+            "slow_pull",
+            "pan_left",
+            "pan_right",
+            "pan_to_participant",
+        }:
             frame_count = max(
                 1,
                 round(max(0.001, float(duration_seconds or 0.001)) * preset.fps),
             )
-            progress = f"on/{max(1, frame_count - 1)}"
+            linear_progress = f"on/{max(1, frame_count - 1)}"
+            easing = str(virtual_camera.get("easing") or "ease_in_out")
+            if easing == "ease_in":
+                progress = f"pow({linear_progress},2)"
+            elif easing == "ease_out":
+                progress = f"1-pow(1-({linear_progress}),2)"
+            elif easing == "ease_in_out":
+                progress = (
+                    f"3*pow({linear_progress},2)-2*pow({linear_progress},3)"
+                )
+            else:
+                progress = linear_progress
             if motion == "fly_in":
                 start_scale, end_scale = 1.0, max(1.08, scale)
             elif motion == "slow_pull":
@@ -4306,10 +4607,21 @@ class RenderService:
                 start_scale, end_scale = max(1.0, scale / 1.04), scale
             else:
                 start_scale = end_scale = scale
-            pan_start = 0.04 if motion == "pan_left" else -0.04 if motion == "pan_right" else 0
+            pan_start = (
+                0.04 if motion == "pan_left" else -0.04 if motion == "pan_right" else 0
+            )
             pan_end = -pan_start
             zoom = f"{start_scale:.4f}+({end_scale - start_scale:.4f})*{progress}"
-            focus = f"{focus_x:.5f}+({pan_start:.4f}+({pan_end - pan_start:.4f})*{progress})"
+            if motion == "pan_to_participant":
+                focus_start_x = (
+                    self._optional_float(virtual_camera.get("focus_start_x")) or focus_x
+                )
+                focus = f"{focus_start_x:.5f}+({focus_x - focus_start_x:.5f})*({progress})"
+            else:
+                focus = (
+                    f"{focus_x:.5f}+({pan_start:.4f}+"
+                    f"({pan_end - pan_start:.4f})*{progress})"
+                )
             return (
                 f"scale={preset.width * 2}:{preset.height * 2}:"
                 "force_original_aspect_ratio=increase,"
@@ -4669,32 +4981,68 @@ class RenderService:
     @staticmethod
     def _thumbnail_seek_seconds(render_asset: Asset) -> float:
         manifest = render_asset.generation_metadata.get("render_manifest")
-        composition = manifest.get("composition") if isinstance(manifest, dict) else None
-        layers = composition.get("segment_layers") if isinstance(composition, dict) else None
-        if isinstance(layers, list):
-            for layer in layers:
-                if not isinstance(layer, dict):
-                    continue
-                layout = layer.get("layout_policy")
-                if not isinstance(layout, dict) or layout.get("name") != (
-                    "seated_panel_rear_screen_cutaway"
-                ):
-                    continue
-                start_ms = layer.get("start_ms")
-                duration_ms = layer.get("duration_ms")
-                if isinstance(start_ms, (int, float)) and isinstance(duration_ms, (int, float)):
-                    return round((start_ms + duration_ms / 2) / 1000, 3)
+        source = (
+            manifest.get("branded_thumbnail_source") if isinstance(manifest, dict) else None
+        )
+        if not isinstance(source, dict) or source.get("kind") != "show_identity":
+            raise ValueError(
+                "automatic thumbnail requires a rendered branded participant introduction"
+            )
+        seek_ms = source.get("frame_seek_ms")
+        if not isinstance(seek_ms, (int, float)) or seek_ms < 0:
+            raise ValueError("branded thumbnail frame provenance is invalid")
+        return round(float(seek_ms) / 1000, 3)
 
-        duration_ms = render_asset.duration_ms
-        if not duration_ms:
-            probe = render_asset.generation_metadata.get("media_probe")
-            duration_ms = probe.get("duration_ms") if isinstance(probe, dict) else None
-        if isinstance(duration_ms, (int, float)) and duration_ms > 0:
-            duration_seconds = duration_ms / 1000
-            if duration_seconds <= 2:
-                return round(duration_seconds / 2, 3)
-            return round(min(max(duration_seconds * 0.25, 1.0), duration_seconds - 1), 3)
-        return 1.0
+    @staticmethod
+    def _branded_thumbnail_source(
+        timeline: dict, asset_by_id: dict[str, Asset]
+    ) -> dict | None:
+        tracks = timeline.get("tracks") if isinstance(timeline.get("tracks"), dict) else {}
+        candidates = [
+            clip
+            for clip in tracks.get("screen_graphics", [])
+            if isinstance(clip, dict)
+            and clip.get("kind") == "show_identity"
+            and clip.get("thumbnail_candidate") is True
+        ]
+        if not candidates:
+            return None
+        if len(candidates) != 1:
+            raise ValueError(
+                "render requires exactly one branded participant-introduction thumbnail marker"
+            )
+        clip = candidates[0]
+        start_ms = int(clip.get("start_ms") or 0)
+        end_ms = int(clip.get("end_ms") or 0)
+        duration_ms = end_ms - start_ms
+        if duration_ms < 1_500:
+            raise ValueError("branded participant introduction is too short for a stable thumbnail")
+        offset_ms = min(max(round(duration_ms * 0.35), 1_000), 2_500, duration_ms - 500)
+        asset_id = str(clip.get("asset_id") or "")
+        slate = asset_by_id.get(asset_id)
+        if (
+            slate is None
+            or slate.status != "completed"
+            or slate.generation_metadata.get("visual_role") != "show_identity_slate"
+        ):
+            raise ValueError("branded participant introduction references an invalid slate")
+        return {
+            "schema_version": "branded_thumbnail_source.v1",
+            "kind": "show_identity",
+            "screen_graphics_clip_id": clip.get("id"),
+            "linked_segment_id": clip.get("linked_segment_id"),
+            "slate_asset_id": asset_id,
+            "slate_checksum": slate.checksum,
+            "episode_title": slate.generation_metadata.get("episode_title"),
+            "logo_checksum": slate.generation_metadata.get("logo_checksum"),
+            "intro_start_ms": start_ms,
+            "intro_end_ms": end_ms,
+            "selection_fraction": 0.35,
+            "frame_seek_ms": start_ms + offset_ms,
+            "minimum_offset_ms": 1_000,
+            "maximum_offset_ms": 2_500,
+            "minimum_tail_ms": 500,
+        }
 
     def _thumbnail_bytes(
         self,
@@ -5982,7 +6330,29 @@ class RenderService:
                     "average_luma": average_luma,
                 }
             )
-
+        source = thumbnail_asset.generation_metadata.get("branded_thumbnail_source")
+        if not isinstance(source, dict) or source.get("kind") != "show_identity":
+            issues.append(
+                {"severity": "fail", "issue": "thumbnail_branded_intro_provenance_missing"}
+            )
+        else:
+            if source.get("episode_title") != episode.title:
+                issues.append(
+                    {"severity": "fail", "issue": "thumbnail_episode_title_mismatch"}
+                )
+            if not source.get("logo_checksum") or not source.get("slate_checksum"):
+                issues.append(
+                    {"severity": "fail", "issue": "thumbnail_brand_checksum_missing"}
+                )
+            expected_seek_ms = int(source.get("frame_seek_ms") or -1)
+            actual_seek_ms = round(
+                float(thumbnail_asset.generation_metadata.get("frame_seek_seconds") or -1)
+                * 1000
+            )
+            if expected_seek_ms < 0 or abs(expected_seek_ms - actual_seek_ms) > 1:
+                issues.append(
+                    {"severity": "fail", "issue": "thumbnail_frame_provenance_mismatch"}
+                )
         failure_count = sum(1 for issue in issues if issue["severity"] == "fail")
         warning_count = sum(1 for issue in issues if issue["severity"] == "warning")
         if failure_count:

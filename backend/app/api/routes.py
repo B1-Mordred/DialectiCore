@@ -97,6 +97,9 @@ from app.domain.schemas import (
     SceneReferenceImageUploadRequest,
     SceneReferenceImageUploadResponse,
     SeatedCharacterReviewRequest,
+    StudioCameraPlateGenerateRequest,
+    StudioCameraPlateReviewRequest,
+    StudioCameraPlateUploadMetadata,
     StudioPanelReviewRequest,
     SubtitleGenerationRequest,
     ThumbnailRequest,
@@ -136,6 +139,7 @@ from app.services.asset_replacement_service import AssetReplacementService
 from app.services.auth_service import AuthService
 from app.services.b1_managed_media_smoke_service import B1ManagedMediaSmokeService
 from app.services.backup_service import BackupService
+from app.services.branding_service import MAX_LOGO_BYTES, BrandingService
 from app.services.comfyui_service import ComfyUiService
 from app.services.discussion_engine import DiscussionEngine
 from app.services.live_provider_preflight_service import LiveProviderPreflightService
@@ -152,6 +156,10 @@ from app.services.publisher_service import PublisherService
 from app.services.redis_bus_service import RedisBusService
 from app.services.render_service import RenderService
 from app.services.research_service import ResearchService
+from app.services.studio_camera_plate_service import (
+    MAX_CAMERA_PLATE_BYTES,
+    StudioCameraPlateService,
+)
 from app.services.subtitle_service import SubtitleService
 from app.services.system_health_service import SystemHealthService
 from app.services.system_metrics_service import SystemMetricsService
@@ -159,7 +167,7 @@ from app.services.timeline_service import TimelineService
 from app.services.voicebox_service import VoiceboxService
 from app.services.worker_lease_service import WorkerLeaseService
 from app.services.worker_status_service import WorkerStatusService
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
 
 router = APIRouter(prefix="/api/v1")
@@ -291,6 +299,18 @@ def get_backup_service() -> BackupService:
     return backup_service
 
 
+def get_branding_service() -> BrandingService:
+    from app.main import branding_service
+
+    return branding_service
+
+
+def get_studio_camera_plate_service() -> StudioCameraPlateService:
+    from app.main import studio_camera_plate_service
+
+    return studio_camera_plate_service
+
+
 def get_auth_service() -> AuthService:
     from app.main import auth_service
 
@@ -344,6 +364,10 @@ WorkerLeaseServiceDep = Annotated[WorkerLeaseService, Depends(get_worker_lease_s
 RedisBusServiceDep = Annotated[RedisBusService, Depends(get_redis_bus_service)]
 SystemMetricsServiceDep = Annotated[SystemMetricsService, Depends(get_system_metrics_service)]
 BackupServiceDep = Annotated[BackupService, Depends(get_backup_service)]
+BrandingServiceDep = Annotated[BrandingService, Depends(get_branding_service)]
+StudioCameraPlateServiceDep = Annotated[
+    StudioCameraPlateService, Depends(get_studio_camera_plate_service)
+]
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
 LiveProviderPreflightServiceDep = Annotated[
     LiveProviderPreflightService,
@@ -648,7 +672,32 @@ async def update_project(
         raise HTTPException(status_code=404, detail="project not found") from exc
     updated = request.to_project(project_id=project_id)
     updated.created_at = existing.created_at
+    if request.branding is None:
+        updated.branding = existing.branding
     return repo.upsert_project(updated)
+
+
+@router.post("/projects/{project_id}/branding/logo", response_model=Project)
+async def upload_project_branding_logo(
+    project_id: UUID,
+    branding_service: BrandingServiceDep,
+    repo: RepositoryDep,
+    logo: Annotated[UploadFile, File()],
+) -> Project:
+    try:
+        project = repo.get_project(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+    payload = await logo.read(MAX_LOGO_BYTES + 1)
+    try:
+        project.branding.logo = branding_service.store_logo(
+            payload,
+            source="project_upload",
+            owner_id=str(project.id),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return repo.upsert_project(project)
 
 
 @router.delete("/projects/{project_id}", status_code=204)
@@ -922,6 +971,164 @@ async def get_episode(
         episode = await asyncio.to_thread(repo.get, episode_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="episode not found") from exc
+    return _episode_detail_projection(episode)
+
+
+@router.post("/episodes/{episode_id}/branding/logo", response_model=Episode)
+async def upload_episode_branding_logo(
+    episode_id: UUID,
+    branding_service: BrandingServiceDep,
+    repo: RepositoryDep,
+    logo: Annotated[UploadFile, File()],
+) -> Episode:
+    try:
+        episode = await asyncio.to_thread(repo.get, episode_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="episode not found") from exc
+    payload = await logo.read(MAX_LOGO_BYTES + 1)
+    try:
+        metadata = branding_service.store_logo(
+            payload,
+            source="episode_upload",
+            owner_id=str(episode.id),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    logo_asset = Asset(
+        episode_id=episode.id,
+        asset_type=AssetType.image,
+        language=episode.source_language,
+        source_entity_type="episode_branding_logo",
+        source_entity_id=metadata.revision_id,
+        storage_uri=metadata.storage_uri,
+        mime_type=metadata.mime_type,
+        width=metadata.width,
+        height=metadata.height,
+        checksum=metadata.checksum,
+        status="completed",
+        generation_metadata={
+            "schema_version": "episode_brand_logo.v1",
+            "visual_role": "show_logo",
+            "logo": metadata.model_dump(mode="json"),
+        },
+    )
+    episode.definition.media.branding.logo_override = metadata
+    episode.assets.append(logo_asset)
+    episode.audit_events.append(
+        AuditEvent(
+            episode_id=episode.id,
+            event_type="episode.branding.logo_uploaded",
+            actor="user",
+            details={
+                "asset_id": str(logo_asset.id),
+                "revision_id": metadata.revision_id,
+                "checksum": metadata.checksum,
+            },
+        )
+    )
+    await asyncio.to_thread(repo.save, episode)
+    return _episode_detail_projection(episode)
+
+
+@router.post("/episodes/{episode_id}/branding/identity-slate", response_model=Episode)
+async def ensure_episode_identity_slate(
+    episode_id: UUID,
+    branding_service: BrandingServiceDep,
+    repo: RepositoryDep,
+) -> Episode:
+    """Create or reuse the immutable effective-brand slate for this episode."""
+    try:
+        episode = await asyncio.to_thread(repo.get, episode_id)
+        project = (
+            repo.get_project(episode.project_id) if episode.project_id is not None else None
+        )
+        branding_service.ensure_identity_slate(episode, project)
+        await asyncio.to_thread(repo.save, episode)
+        return _episode_detail_projection(episode)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="episode or project not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/episodes/{episode_id}/studio-camera-plates/upload", response_model=Episode)
+async def upload_studio_camera_plate(
+    episode_id: UUID,
+    camera_plates: StudioCameraPlateServiceDep,
+    repo: RepositoryDep,
+    image: Annotated[UploadFile, File()],
+    metadata: Annotated[str, Form()],
+) -> Episode:
+    try:
+        episode = await asyncio.to_thread(repo.get, episode_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="episode not found") from exc
+    try:
+        parsed_metadata = StudioCameraPlateUploadMetadata.model_validate_json(metadata)
+        payload = await image.read(MAX_CAMERA_PLATE_BYTES + 1)
+        camera_plates.upload_plate(episode, payload, parsed_metadata)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await asyncio.to_thread(repo.save, episode)
+    return _episode_detail_projection(episode)
+
+
+@router.post("/episodes/{episode_id}/studio-camera-plates/generate", response_model=Episode)
+async def generate_studio_camera_plate(
+    episode_id: UUID,
+    request: StudioCameraPlateGenerateRequest,
+    camera_plates: StudioCameraPlateServiceDep,
+    repo: RepositoryDep,
+    comfyui: ComfyUiServiceDep,
+) -> Episode:
+    try:
+        episode = await asyncio.to_thread(repo.get, episode_id)
+        asset = camera_plates.plan_managed_generation(episode, request)
+        updated = await comfyui.generate_visual_assets(
+            episode,
+            VisualGenerationRequest(
+                transcript_version_id=episode.canonical_transcript_version_id,
+                asset_ids=[asset.id],
+                user_id=request.user_id,
+                fallback_on_failure=False,
+                local_fallback_only=False,
+            ),
+            endpoints=repo.list_comfyui_endpoints(),
+            workflows=repo.list_comfyui_workflows(),
+            visual_profiles=repo.list_visual_profiles(),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="episode not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502, detail="managed B1 camera-plate generation failed"
+        ) from exc
+    await asyncio.to_thread(repo.save, updated)
+    return _episode_detail_projection(updated)
+
+
+@router.post(
+    "/episodes/{episode_id}/studio-camera-plates/{asset_id}/review",
+    response_model=Episode,
+)
+async def review_studio_camera_plate(
+    episode_id: UUID,
+    asset_id: UUID,
+    request: StudioCameraPlateReviewRequest,
+    camera_plates: StudioCameraPlateServiceDep,
+    repo: RepositoryDep,
+) -> Episode:
+    try:
+        episode = await asyncio.to_thread(repo.get, episode_id)
+        camera_plates.review_plate(episode, asset_id, request)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="episode not found") from exc
+    except ValueError as exc:
+        status_code = 404 if str(exc) == "studio camera plate not found" else 422
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    await asyncio.to_thread(repo.save, episode)
     return _episode_detail_projection(episode)
 
 
@@ -5185,9 +5392,19 @@ async def build_episode_timeline(
     request: TimelineBuildRequest,
     repo: RepositoryDep,
     timeline_service: TimelineServiceDep,
+    branding_service: BrandingServiceDep,
 ) -> Episode:
     try:
         episode = repo.get(episode_id)
+        project = repo.get_project(episode.project_id) if episode.project_id is not None else None
+        opening = episode.definition.media.opening
+        introduce_participants = (
+            opening.post_primer_bridge.introduce_participants
+            if opening.post_primer_bridge.introduce_participants is not None
+            else opening.introduce_participants
+        )
+        if introduce_participants:
+            branding_service.ensure_identity_slate(episode, project)
         updated = timeline_service.build_timeline(episode, request)
         return repo.save(updated)
     except KeyError as exc:

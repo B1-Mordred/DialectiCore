@@ -19,6 +19,7 @@ from app.services.asset_replacement_service import AssetReplacementService
 from app.services.auth_service import AuthService
 from app.services.b1_managed_media_smoke_service import B1ManagedMediaSmokeService
 from app.services.backup_service import BackupService
+from app.services.branding_service import BrandingService
 from app.services.comfyui_service import ComfyUiService
 from app.services.discussion_engine import DiscussionEngine
 from app.services.live_provider_preflight_service import LiveProviderPreflightService
@@ -40,6 +41,7 @@ from app.services.structured_logging import (
     request_log_payload,
     setup_structured_logging,
 )
+from app.services.studio_camera_plate_service import StudioCameraPlateService
 from app.services.subtitle_service import SubtitleService
 from app.services.system_health_service import SystemHealthService
 from app.services.system_metrics_service import SystemMetricsService
@@ -76,6 +78,8 @@ worker_status_service = WorkerStatusService(settings)
 worker_lease_service = WorkerLeaseService(settings)
 system_metrics_service = SystemMetricsService()
 backup_service = BackupService(settings)
+branding_service = BrandingService(settings)
+studio_camera_plate_service = StudioCameraPlateService(settings)
 redis_bus_service = RedisBusService(settings)
 asset_replacement_service = AssetReplacementService(settings)
 b1_managed_media_smoke_service = B1ManagedMediaSmokeService(settings)

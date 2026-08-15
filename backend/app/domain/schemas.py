@@ -415,6 +415,7 @@ class MediaDirectingDefinition(BaseModel):
             "fly_in",
             "pan_left",
             "pan_right",
+            "pan_to_participant",
         ]
     ] = Field(
         default_factory=lambda: [
@@ -425,6 +426,7 @@ class MediaDirectingDefinition(BaseModel):
             "fly_in",
             "pan_left",
             "pan_right",
+            "pan_to_participant",
         ]
     )
 
@@ -444,6 +446,60 @@ class MediaDirectingDefinition(BaseModel):
         return self
 
 
+class BrandLogoMetadata(BaseModel):
+    revision_id: str = Field(min_length=1, max_length=128)
+    storage_uri: str
+    checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    width: int = Field(ge=1)
+    height: int = Field(ge=1)
+    mime_type: Literal["image/png"] = "image/png"
+    size_bytes: int = Field(ge=1)
+    source: Literal["bundled", "project_upload", "episode_upload"]
+    uploaded_at: datetime | None = None
+
+
+class ProjectBranding(BaseModel):
+    show_name: str | None = Field(default=None, min_length=1, max_length=256)
+    logo: BrandLogoMetadata | None = None
+
+
+class EpisodeBrandingDefinition(BaseModel):
+    logo_override: BrandLogoMetadata | None = None
+
+
+class NormalizedImagePoint(BaseModel):
+    x: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=1.0)
+
+
+class StudioCameraPlateCalibration(BaseModel):
+    rear_screen_quadrilateral: list[NormalizedImagePoint] = Field(
+        min_length=4, max_length=4
+    )
+    desk_occlusion_polygon: list[NormalizedImagePoint] = Field(min_length=3)
+    seat_anchors: dict[str, NormalizedImagePoint] = Field(min_length=1)
+
+
+class StudioCameraPlateUploadMetadata(BaseModel):
+    angle_id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    calibration: StudioCameraPlateCalibration
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    user_id: str | None = None
+
+
+class StudioCameraPlateGenerateRequest(BaseModel):
+    angle_id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    prompt: str = Field(min_length=20, max_length=2_000)
+    user_id: str | None = None
+
+
+class StudioCameraPlateReviewRequest(BaseModel):
+    decision: Literal["approved", "rejected"]
+    calibration: StudioCameraPlateCalibration | None = None
+    comment: str | None = Field(default=None, max_length=2_000)
+    user_id: str | None = None
+
+
 class MediaDefinition(BaseModel):
     aspect_ratio: str = "16:9"
     width: int = Field(default=1920, ge=320)
@@ -458,6 +514,7 @@ class MediaDefinition(BaseModel):
     evidence_presentation: Literal["review_only", "burned_overlays"] = "review_only"
     opening: OpeningDefinition = Field(default_factory=OpeningDefinition)
     directing: MediaDirectingDefinition = Field(default_factory=MediaDirectingDefinition)
+    branding: EpisodeBrandingDefinition = Field(default_factory=EpisodeBrandingDefinition)
 
 
 class WorkflowDefinition(BaseModel):
@@ -506,6 +563,7 @@ class Project(BaseModel):
     description: str = ""
     default_language: str = Field(default="en", min_length=2, max_length=12)
     default_show_format_id: str = "analytical_panel_v1"
+    branding: ProjectBranding = Field(default_factory=ProjectBranding)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -515,9 +573,10 @@ class ProjectCreateRequest(BaseModel):
     description: str = ""
     default_language: str = Field(default="en", min_length=2, max_length=12)
     default_show_format_id: str = "analytical_panel_v1"
+    branding: ProjectBranding | None = None
 
     def to_project(self, project_id: UUID | None = None) -> Project:
-        payload = self.model_dump()
+        payload = self.model_dump(exclude_none=True)
         if project_id is not None:
             payload["id"] = project_id
         return Project(**payload)

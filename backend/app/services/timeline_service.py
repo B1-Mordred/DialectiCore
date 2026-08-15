@@ -121,6 +121,7 @@ class TimelineService:
             raise ValueError("timeline must include tracks")
         segments = self._normalize_timeline_segments(raw_segments)
         tracks = self._normalize_timeline_tracks(request.timeline["tracks"])
+        self._validate_timeline_track_resources(episode, segments, tracks)
 
         latest = self._latest_timeline_asset(episode, transcript)
         if latest is not None:
@@ -215,6 +216,7 @@ class TimelineService:
                 "camera_direction",
                 "broll_content",
                 "broll_presentation",
+                "screen_graphics",
                 "caption_clips",
             }:
                 normalized[track_name] = raw_clips
@@ -256,12 +258,33 @@ class TimelineService:
                         "fly_in",
                         "pan_left",
                         "pan_right",
+                        "pan_to_participant",
                     }:
                         raise ValueError(f"unsupported camera action: {action}")
+                    if action == "pan_to_participant" and not raw_clip.get(
+                        "target_participant_id"
+                    ):
+                        raise ValueError(
+                            "pan_to_participant camera clips require target_participant_id"
+                        )
+                    easing = str(raw_clip.get("easing") or "ease_in_out")
+                    if easing not in {"linear", "ease_in", "ease_out", "ease_in_out"}:
+                        raise ValueError(f"unsupported camera easing: {easing}")
                 if track_name == "broll_presentation":
                     mode = raw_clip.get("mode")
-                    if mode is not None and mode not in {"rear_screen", "fullscreen"}:
+                    if mode is not None and mode not in {
+                        "rear_screen",
+                        "fullscreen",
+                        "enter",
+                        "exit",
+                        "roundtrip",
+                    }:
                         raise ValueError(f"unsupported B-roll presentation mode: {mode}")
+                if track_name == "screen_graphics":
+                    if raw_clip.get("kind") != "show_identity":
+                        raise ValueError("unsupported screen graphic kind")
+                    if not raw_clip.get("asset_id"):
+                        raise ValueError("show identity clips require asset_id")
                 clips.append(
                     {
                         **raw_clip,
@@ -282,7 +305,110 @@ class TimelineService:
             normalized[track_name] = sorted(
                 clips, key=lambda clip: (clip["start_ms"], clip["end_ms"], clip["id"])
             )
+        self._validate_parallel_track_links(normalized)
         return normalized
+
+    @staticmethod
+    def _validate_parallel_track_links(tracks: dict) -> None:
+        content_ids = {
+            str(clip.get("id"))
+            for clip in tracks.get("broll_content", [])
+            if isinstance(clip, dict)
+        }
+        for clip in tracks.get("broll_presentation", []):
+            content_clip_id = str(clip.get("content_clip_id") or "")
+            if content_clip_id and content_clip_id not in content_ids:
+                raise ValueError(
+                    f"B-roll presentation clip {clip.get('id')} has an orphaned content link"
+                )
+        for graphic in tracks.get("screen_graphics", []):
+            if graphic.get("kind") != "show_identity":
+                continue
+            for presentation in tracks.get("broll_presentation", []):
+                if max(int(graphic["start_ms"]), int(presentation["start_ms"])) < min(
+                    int(graphic["end_ms"]), int(presentation["end_ms"])
+                ):
+                    raise ValueError(
+                        "B-roll presentation cannot overlap the branded participant introduction"
+                    )
+
+    @staticmethod
+    def _validate_timeline_track_resources(
+        episode: Episode,
+        segments: list[dict],
+        tracks: dict,
+    ) -> None:
+        duration_ms = max((int(segment["end_ms"]) for segment in segments), default=0)
+        assets_by_id = {str(asset.id): asset for asset in episode.assets}
+        participant_ids = {participant.id for participant in episode.participants}
+        for track_name, clips in tracks.items():
+            if not isinstance(clips, list):
+                continue
+            for clip in clips:
+                if isinstance(clip, dict) and int(clip.get("end_ms") or 0) > duration_ms:
+                    raise ValueError(
+                        f"timeline track {track_name} clip {clip.get('id')} "
+                        "exceeds programme duration"
+                    )
+        for clip in tracks.get("broll_content", []):
+            asset = assets_by_id.get(str(clip.get("asset_id") or ""))
+            if (
+                asset is not None
+                and asset.duration_ms is not None
+                and int(clip.get("source_out_ms") or 0) > asset.duration_ms
+                and not clip.get("loop")
+            ):
+                raise ValueError(f"B-roll clip {clip.get('id')} exceeds its source duration")
+        thumbnail_markers = 0
+        for clip in tracks.get("screen_graphics", []):
+            if clip.get("kind") != "show_identity":
+                continue
+            asset = assets_by_id.get(str(clip.get("asset_id") or ""))
+            if (
+                asset is None
+                or asset.status != "completed"
+                or asset.generation_metadata.get("visual_role") != "show_identity_slate"
+                or asset.generation_metadata.get("episode_title") != episode.title
+            ):
+                raise ValueError(
+                    f"screen graphic {clip.get('id')} requires this episode's immutable "
+                    "show-identity slate"
+                )
+            if clip.get("thumbnail_candidate") is True:
+                thumbnail_markers += 1
+        if thumbnail_markers > 1:
+            raise ValueError("timeline may contain only one branded thumbnail marker")
+        for clip in tracks.get("camera_direction", []):
+            target_id = clip.get("target_participant_id")
+            if target_id is not None and target_id not in participant_ids:
+                raise ValueError(
+                    f"camera clip {clip.get('id')} targets an unknown participant"
+                )
+            angle_id = str(clip.get("angle_id") or "frontal")
+            if angle_id == "frontal":
+                continue
+            if str(clip.get("view") or "").startswith("speaker_"):
+                raise ValueError("alternate camera plates cannot be used for speaking closeups")
+            plate_asset_id = str(clip.get("camera_plate_asset_id") or "")
+            plate = assets_by_id.get(plate_asset_id)
+            if (
+                plate is None
+                or plate.generation_metadata.get("visual_role") != "studio_camera_plate"
+                or plate.generation_metadata.get("angle_id") != angle_id
+                or plate.generation_metadata.get("render_ready") is not True
+                or not isinstance(plate.generation_metadata.get("calibration"), dict)
+            ):
+                raise ValueError(
+                    f"camera angle {angle_id} requires its exact approved calibrated plate"
+                )
+            for graphic in tracks.get("screen_graphics", []):
+                if max(int(clip["start_ms"]), int(graphic["start_ms"])) < min(
+                    int(clip["end_ms"]), int(graphic["end_ms"])
+                ):
+                    raise ValueError(
+                        "alternate camera plates cannot overlap screen graphics until the "
+                        "approved rear-screen calibration has been materialized"
+                    )
 
     def latest_timeline_payload(
         self,
@@ -371,6 +497,7 @@ class TimelineService:
             "camera_direction": [],
             "broll_content": [],
             "broll_presentation": [],
+            "screen_graphics": [],
             "caption_clips": [],
         }
         chapters: list[dict] = []
@@ -641,6 +768,8 @@ class TimelineService:
                 previous_turn_type = current_turn_type
             cursor_ms += duration_ms
 
+        self._apply_branded_participant_introduction(episode, segments, tracks)
+
         return {
             "id": str(uuid4()),
             "schema_version": "episode_timeline.v3",
@@ -664,7 +793,7 @@ class TimelineService:
                 "directing": episode.definition.media.directing.model_dump(mode="json"),
             },
             "tracks": tracks,
-            "track_schema_version": "dialecticore.parallel_directing_tracks.v1",
+            "track_schema_version": "dialecticore.parallel_directing_tracks.v2",
             "segments": segments,
             "chapters": chapters,
             "program_structure": {
@@ -693,6 +822,96 @@ class TimelineService:
                 },
             },
         }
+
+    def _apply_branded_participant_introduction(
+        self,
+        episode: Episode,
+        segments: list[dict],
+        tracks: dict,
+    ) -> None:
+        opening = episode.definition.media.opening
+        introduce_participants = (
+            opening.post_primer_bridge.introduce_participants
+            if opening.post_primer_bridge.introduce_participants is not None
+            else opening.introduce_participants
+        )
+        if not introduce_participants:
+            return
+        intro = next(
+            (
+                segment
+                for segment in segments
+                if segment.get("segment_type") == "post_primer_host_bridge"
+            ),
+            None,
+        )
+        if intro is None:
+            return
+        slate = next(
+            (
+                asset
+                for asset in reversed(episode.assets)
+                if asset.asset_type == AssetType.image
+                and asset.status == "completed"
+                and asset.generation_metadata.get("visual_role") == "show_identity_slate"
+            ),
+            None,
+        )
+        if slate is None:
+            raise ValueError(
+                "participant introduction requires a generated show identity slate"
+            )
+        start_ms = int(intro["start_ms"])
+        end_ms = int(intro["end_ms"])
+        duration_ms = end_ms - start_ms
+        intro["show_identity_slate_asset_id"] = str(slate.id)
+        intro["thumbnail_candidate"] = True
+        intro["camera_view"] = "establishing_wide"
+        intro["camera_action"] = "fly_in"
+        intro["direction"] = {
+            **(intro.get("direction") if isinstance(intro.get("direction"), dict) else {}),
+            "view": "establishing_wide",
+            "action": "fly_in",
+            "framing_policy": "branded_participant_introduction.v1",
+        }
+        camera = next(
+            (
+                clip
+                for clip in tracks.get("camera_direction", [])
+                if clip.get("linked_segment_id") == intro.get("id")
+            ),
+            None,
+        )
+        if camera is not None:
+            camera.update(
+                {
+                    "view": "establishing_wide",
+                    "action": "fly_in",
+                    "angle_id": "frontal",
+                    "easing": "ease_in_out",
+                    "framing_policy": "branded_participant_introduction.v1",
+                }
+            )
+        tracks["screen_graphics"].append(
+            {
+                "id": f"show-identity-{intro['id']}",
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "duration_ms": duration_ms,
+                "source_in_ms": 0,
+                "source_out_ms": duration_ms,
+                "kind": "show_identity",
+                "asset_id": str(slate.id),
+                "linked_segment_id": intro["id"],
+                "thumbnail_candidate": True,
+                "rear_screen_priority": 100,
+            }
+        )
+        tracks["broll_presentation"] = [
+            clip
+            for clip in tracks.get("broll_presentation", [])
+            if not max(start_ms, int(clip["start_ms"])) < min(end_ms, int(clip["end_ms"]))
+        ]
 
     def _visual_layers(
         self,

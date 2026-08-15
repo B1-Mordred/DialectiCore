@@ -271,7 +271,7 @@ def test_seated_panel_timeline_cuts_to_composited_rear_screen_media(
     segment = timeline["segments"][0]
     assert timeline["media"]["composition_policy"] == "seated_studio_panel.v1"
     assert timeline["schema_version"] == "episode_timeline.v3"
-    assert timeline["track_schema_version"] == ("dialecticore.parallel_directing_tracks.v1")
+    assert timeline["track_schema_version"] == ("dialecticore.parallel_directing_tracks.v2")
     assert segment["video_asset_id"] == str(video.id)
     assert segment["studio_panel_scene_asset_id"] == str(panel.id)
     assert segment["direction"]["speaker_mouth_mode"] == "audio_driven_seated_panel"

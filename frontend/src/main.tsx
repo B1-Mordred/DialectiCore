@@ -227,6 +227,16 @@ type Project = {
   description: string;
   default_language: string;
   default_show_format_id: string;
+  branding?: {
+    show_name?: string | null;
+    logo?: {
+      revision_id: string;
+      storage_uri: string;
+      checksum: string;
+      width: number;
+      height: number;
+    } | null;
+  };
   created_at: string;
   updated_at: string;
 };
@@ -817,6 +827,13 @@ type TimelineTrackClip = {
   linked_segment_id?: string | null;
   participant_id?: string | null;
   speaker_participant_id?: string | null;
+  from_participant_id?: string | null;
+  target_participant_id?: string | null;
+  angle_id?: string | null;
+  camera_plate_asset_id?: string | null;
+  easing?: string;
+  kind?: string;
+  thumbnail_candidate?: boolean;
   content_clip_id?: string | null;
   view?: string;
   action?: string;
@@ -831,6 +848,7 @@ const DIRECTING_TRACK_LANES = [
   ["dialogue", "Dialogue"],
   ["character_performance", "Character"],
   ["camera_direction", "Camera"],
+  ["screen_graphics", "Screen graphics"],
   ["broll_content", "B-roll content"],
   ["broll_presentation", "B-roll presentation"],
   ["caption_clips", "Captions"],
@@ -1190,6 +1208,7 @@ type ProjectDraft = {
   description: string;
   default_language: string;
   default_show_format_id: string;
+  show_name: string;
 };
 
 type LanguageProfile = {
@@ -4424,6 +4443,70 @@ function App() {
       await invalidateProductionQueries(queryClient);
     },
   });
+  const uploadStudioCameraPlate = useMutation({
+    mutationFn: async ({
+      episodeId,
+      file,
+      angleId,
+      calibration,
+    }: {
+      episodeId: string;
+      file: File;
+      angleId: string;
+      calibration: Record<string, unknown>;
+    }) => {
+      const form = new FormData();
+      form.append("image", file);
+      form.append(
+        "metadata",
+        JSON.stringify({
+          angle_id: angleId,
+          calibration,
+          provenance: { kind: "web_ui_calibrated_upload", filename: file.name },
+          user_id: "web-ui",
+        }),
+      );
+      const response = await fetch(
+        `${apiBaseUrl}/api/v1/episodes/${encodeURIComponent(
+          episodeId,
+        )}/studio-camera-plates/upload`,
+        { method: "POST", headers: requestHeaders(), body: form },
+      );
+      if (!response.ok) throw await apiRequestError(response);
+      return (await response.json()) as Episode;
+    },
+    onSuccess: async (_, variables) => {
+      await invalidateProductionQueries(queryClient);
+      await queryClient.invalidateQueries({
+        queryKey: ["episode-detail", variables.episodeId],
+      });
+    },
+  });
+  const reviewStudioCameraPlate = useMutation({
+    mutationFn: ({
+      episodeId,
+      assetId,
+      decision,
+      calibration,
+    }: {
+      episodeId: string;
+      assetId: string;
+      decision: "approved" | "rejected";
+      calibration?: Record<string, unknown>;
+    }) =>
+      postJson(
+        `/api/v1/episodes/${encodeURIComponent(
+          episodeId,
+        )}/studio-camera-plates/${encodeURIComponent(assetId)}/review`,
+        { decision, calibration, user_id: "web-ui" },
+      ),
+    onSuccess: async (_, variables) => {
+      await invalidateProductionQueries(queryClient);
+      await queryClient.invalidateQueries({
+        queryKey: ["episode-detail", variables.episodeId],
+      });
+    },
+  });
   const replaceAsset = useMutation({
     mutationFn: ({
       episodeId,
@@ -5626,6 +5709,25 @@ function App() {
       ]);
     },
   });
+  const uploadProjectLogo = useMutation({
+    mutationFn: async ({ projectId, file }: { projectId: string; file: File }) => {
+      const form = new FormData();
+      form.append("logo", file);
+      const response = await fetch(
+        `${apiBaseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/branding/logo`,
+        { method: "POST", headers: requestHeaders(), body: form },
+      );
+      if (!response.ok) throw await apiRequestError(response);
+      return (await response.json()) as Project;
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["projects"] }),
+        queryClient.invalidateQueries({ queryKey: ["episodes"] }),
+        queryClient.invalidateQueries({ queryKey: ["audit-events"] }),
+      ]);
+    },
+  });
   const deleteProject = useMutation({
     mutationFn: (projectId: string) =>
       deleteJson(`/api/v1/projects/${encodeURIComponent(projectId)}`),
@@ -6382,8 +6484,12 @@ function App() {
                   isDeleting={deleteProject.isPending}
                   isLoading={projects.isLoading}
                   isSaving={upsertProject.isPending}
+                  isUploadingLogo={uploadProjectLogo.isPending}
                   onDelete={(projectId) => deleteProject.mutate(projectId)}
                   onSave={(payload) => upsertProject.mutate(payload)}
+                  onUploadLogo={(projectId, file) =>
+                    uploadProjectLogo.mutate({ projectId, file })
+                  }
                 />
                 <LanguageProfilePanel
                   profiles={languageProfiles.data ?? []}
@@ -7413,7 +7519,19 @@ function App() {
                   ) : null}
                   <TimelineEditorPanel
                     episode={selectedEpisode}
+                    isManagingCameraPlates={
+                      uploadStudioCameraPlate.isPending || reviewStudioCameraPlate.isPending
+                    }
                     isSaving={updateTimeline.isPending}
+                    onReviewCameraPlate={(assetId, decision, calibration) => {
+                      if (!selectedEpisode) return;
+                      reviewStudioCameraPlate.mutate({
+                        episodeId: selectedEpisode.id,
+                        assetId,
+                        decision,
+                        calibration,
+                      });
+                    }}
                     onSave={(timeline) => {
                       if (selectedEpisode) {
                         updateTimeline.mutate({
@@ -7423,6 +7541,15 @@ function App() {
                             "Scene timing and camera direction updated in the timeline editor.",
                         });
                       }
+                    }}
+                    onUploadCameraPlate={(file, angleId, calibration) => {
+                      if (!selectedEpisode) return;
+                      uploadStudioCameraPlate.mutate({
+                        episodeId: selectedEpisode.id,
+                        file,
+                        angleId,
+                        calibration,
+                      });
                     }}
                   />
                   <details className="productionDisclosure">
@@ -23346,10 +23473,67 @@ function optionalNumberDraft(value: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+type CameraCalibrationPoint = { x: number; y: number };
+type CameraPlateCalibrationDraft = {
+  rear_screen_quadrilateral: CameraCalibrationPoint[];
+  desk_occlusion_polygon: CameraCalibrationPoint[];
+  seat_anchors: Record<string, CameraCalibrationPoint>;
+};
+
+function defaultCameraPlateCalibration(
+  participants: ParticipantProfile[],
+): CameraPlateCalibrationDraft {
+  return {
+    rear_screen_quadrilateral: [
+      { x: 0.3, y: 0.14 },
+      { x: 0.7, y: 0.14 },
+      { x: 0.7, y: 0.48 },
+      { x: 0.3, y: 0.48 },
+    ],
+    desk_occlusion_polygon: [
+      { x: 0.08, y: 0.72 },
+      { x: 0.92, y: 0.72 },
+      { x: 0.98, y: 1 },
+      { x: 0.02, y: 1 },
+    ],
+    seat_anchors: Object.fromEntries(
+      participants.map((participant, index) => [
+        participant.id,
+        {
+          x: (index + 1) / (participants.length + 1),
+          y: 0.61,
+        },
+      ]),
+    ),
+  };
+}
+
+function cameraPlateCalibrationFromAsset(
+  asset: Asset | null,
+  participants: ParticipantProfile[],
+): CameraPlateCalibrationDraft {
+  const calibration = asset?.generation_metadata?.calibration;
+  if (calibration && typeof calibration === "object") {
+    return JSON.parse(JSON.stringify(calibration)) as CameraPlateCalibrationDraft;
+  }
+  return defaultCameraPlateCalibration(participants);
+}
+
 function TimelineEditorPanel(props: {
   episode: Episode | null;
+  isManagingCameraPlates: boolean;
   isSaving: boolean;
   onSave: (timeline: TimelinePayload) => void;
+  onUploadCameraPlate: (
+    file: File,
+    angleId: string,
+    calibration: Record<string, unknown>,
+  ) => void;
+  onReviewCameraPlate: (
+    assetId: string,
+    decision: "approved" | "rejected",
+    calibration?: Record<string, unknown>,
+  ) => void;
 }) {
   const activeTimeline = latestTimelinePayload(props.episode);
   const [draft, setDraft] = React.useState<TimelinePayload | null>(null);
@@ -23360,9 +23544,21 @@ function TimelineEditorPanel(props: {
     trackName: string;
     clipId: string;
   } | null>(null);
-  const [timelineZoom, setTimelineZoom] = React.useState(1);
+  const [timelineZoom, setTimelineZoom] = React.useState(0);
+  const [playheadMs, setPlayheadMs] = React.useState(0);
+  const [snapEnabled, setSnapEnabled] = React.useState(true);
+  const [undoStack, setUndoStack] = React.useState<TimelinePayload[]>([]);
+  const [redoStack, setRedoStack] = React.useState<TimelinePayload[]>([]);
   const brollPreviewRef = React.useRef<HTMLVideoElement>(null);
   const [brollPreviewPositionMs, setBrollPreviewPositionMs] = React.useState(0);
+  const [cameraPlateAngleId, setCameraPlateAngleId] = React.useState("alternate-wide");
+  const [selectedCameraPlateId, setSelectedCameraPlateId] = React.useState<string | null>(
+    null,
+  );
+  const [cameraCalibration, setCameraCalibration] =
+    React.useState<CameraPlateCalibrationDraft>(() =>
+      defaultCameraPlateCalibration(props.episode?.participants ?? []),
+    );
   const timelineKey = `${props.episode?.id ?? "none"}:${activeTimeline?.id ?? "none"}:${
     activeTimeline?.edit_version ?? 0
   }`;
@@ -23372,14 +23568,99 @@ function TimelineEditorPanel(props: {
       setDraft(null);
       setSelectedSegmentId(null);
       setSelectedTrackClip(null);
-      setTimelineZoom(1);
+      setTimelineZoom(0);
+      setPlayheadMs(0);
+      setUndoStack([]);
+      setRedoStack([]);
       return;
     }
     const next = cloneTimeline(activeTimeline);
     setDraft(next);
     setSelectedSegmentId(next.segments?.[0]?.id ?? null);
     setSelectedTrackClip(null);
+    setPlayheadMs(0);
+    setUndoStack([]);
+    setRedoStack([]);
   }, [timelineKey]);
+
+  const cameraPlateAssets = (props.episode?.assets ?? []).filter(
+    (asset) => asset.generation_metadata?.visual_role === "studio_camera_plate",
+  );
+  const selectedCameraPlate =
+    cameraPlateAssets.find((asset) => asset.id === selectedCameraPlateId) ?? null;
+
+  React.useEffect(() => {
+    if (!selectedCameraPlateId && cameraPlateAssets.length) {
+      setSelectedCameraPlateId(cameraPlateAssets[cameraPlateAssets.length - 1].id);
+      return;
+    }
+    setCameraCalibration(
+      cameraPlateCalibrationFromAsset(
+        selectedCameraPlate,
+        props.episode?.participants ?? [],
+      ),
+    );
+  }, [selectedCameraPlateId, selectedCameraPlate?.id, props.episode?.id]);
+
+  const beginCalibrationPointDrag = (
+    event: React.PointerEvent<SVGCircleElement>,
+    kind: "screen" | "desk" | "seat",
+    key: number | string,
+  ) => {
+    event.preventDefault();
+    const svg = event.currentTarget.ownerSVGElement;
+    if (!svg) return;
+    const move = (moveEvent: PointerEvent) => {
+      const bounds = svg.getBoundingClientRect();
+      const point = {
+        x: Math.min(1, Math.max(0, (moveEvent.clientX - bounds.left) / bounds.width)),
+        y: Math.min(1, Math.max(0, (moveEvent.clientY - bounds.top) / bounds.height)),
+      };
+      setCameraCalibration((current) => {
+        if (kind === "seat") {
+          return {
+            ...current,
+            seat_anchors: { ...current.seat_anchors, [String(key)]: point },
+          };
+        }
+        const field =
+          kind === "screen" ? "rear_screen_quadrilateral" : "desk_occlusion_polygon";
+        return {
+          ...current,
+          [field]: current[field].map((candidate, index) =>
+            index === Number(key) ? point : candidate,
+          ),
+        };
+      });
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up, { once: true });
+  };
+
+  const rememberDraft = (current: TimelinePayload) => {
+    setUndoStack((history) => [...history.slice(-29), cloneTimeline(current)]);
+    setRedoStack([]);
+  };
+
+  const undoTimelineEdit = () => {
+    const previous = undoStack[undoStack.length - 1];
+    if (!previous || !draft) return;
+    setRedoStack((history) => [...history.slice(-29), cloneTimeline(draft)]);
+    setUndoStack((history) => history.slice(0, -1));
+    setDraft(cloneTimeline(previous));
+  };
+
+  const redoTimelineEdit = () => {
+    const next = redoStack[redoStack.length - 1];
+    if (!next || !draft) return;
+    setUndoStack((history) => [...history.slice(-29), cloneTimeline(draft)]);
+    setRedoStack((history) => history.slice(0, -1));
+    setDraft(cloneTimeline(next));
+  };
 
   const segments = draft?.segments ?? [];
   const selectedSegment =
@@ -23397,6 +23678,7 @@ function TimelineEditorPanel(props: {
       if (!current?.segments) {
         return current;
       }
+      rememberDraft(current);
       const nextSegments = current.segments.map((segment) => {
         if (segment.id !== segmentId) {
           return segment;
@@ -23456,6 +23738,7 @@ function TimelineEditorPanel(props: {
       if (!current?.tracks) {
         return current;
       }
+      rememberDraft(current);
       const clips = timelineTrackClips(current, trackName);
       const nextClips = clips.map((clip) => {
         if (clip.id !== clipId) {
@@ -23499,9 +23782,29 @@ function TimelineEditorPanel(props: {
               };
             })
           : current.segments;
+      let nextTracks = { ...current.tracks, [trackName]: nextClips };
+      if (trackName === "broll_content") {
+        const sourceClip = nextClips.find((clip) => clip.id === clipId);
+        if (sourceClip) {
+          nextTracks = {
+            ...nextTracks,
+            broll_presentation: timelineTrackClips(current, "broll_presentation").map(
+              (presentation) =>
+                presentation.content_clip_id === clipId
+                  ? {
+                      ...presentation,
+                      start_ms: sourceClip.start_ms,
+                      end_ms: sourceClip.end_ms,
+                      duration_ms: Number(sourceClip.end_ms) - Number(sourceClip.start_ms),
+                    }
+                  : presentation,
+            ),
+          };
+        }
+      }
       return {
         ...current,
-        tracks: { ...current.tracks, [trackName]: nextClips },
+        tracks: nextTracks,
         segments: nextSegments,
       };
     });
@@ -23543,9 +23846,329 @@ function TimelineEditorPanel(props: {
   const selectedBrollUrl = selectedBrollAsset
     ? episodeAssetDownloadUrlById(props.episode?.id, selectedBrollAsset.id)
     : null;
+  const eligibleBrollAssets = (props.episode?.assets ?? []).filter(
+    (asset) => {
+      const visualRole = String(asset.generation_metadata?.visual_role ?? "");
+      const excludedRoles = new Set([
+        "show_identity_slate",
+        "show_logo",
+        "studio_camera_plate",
+        "video_primary",
+        "studio_scene",
+        "studio_panel_keyframe",
+        "studio_seated_character",
+        "reaction_loop",
+        "speaker_portrait",
+      ]);
+      return (
+        asset.status === "completed" &&
+        Boolean(asset.storage_uri) &&
+        ["broll", "video", "image"].includes(asset.asset_type) &&
+        (asset.asset_type === "broll" ||
+          [
+            "broll",
+            "wall_screen_broll",
+            "topic_broll",
+            "primer_media",
+            "opening_visual",
+          ].includes(visualRole)) &&
+        !excludedRoles.has(visualRole)
+      );
+    },
+  );
+  const approvedCameraPlates = (props.episode?.assets ?? []).filter(
+    (asset) =>
+      asset.status === "completed" &&
+      asset.generation_metadata?.visual_role === "studio_camera_plate" &&
+      asset.generation_metadata?.render_ready === true,
+  );
+  const addBrollAssetToTimeline = (asset: Asset) => {
+    if (!draft?.tracks) return;
+    const programmeDuration = Number(draft.duration_ms ?? 0);
+    const startMs = Math.min(Math.max(0, playheadMs), Math.max(0, programmeDuration - 100));
+    const sourceDuration = Number(asset.duration_ms ?? 5_000);
+    const durationMs = Math.max(100, Math.min(sourceDuration, 5_000, programmeDuration - startMs));
+    const clipId = `broll-content-${crypto.randomUUID()}`;
+    const presentationId = `broll-presentation-${crypto.randomUUID()}`;
+    rememberDraft(draft);
+    setDraft({
+      ...draft,
+      tracks: {
+        ...draft.tracks,
+        broll_content: [
+          ...timelineTrackClips(draft, "broll_content"),
+          {
+            id: clipId,
+            asset_id: asset.id,
+            start_ms: startMs,
+            end_ms: startMs + durationMs,
+            duration_ms: durationMs,
+            source_in_ms: 0,
+            source_out_ms: durationMs,
+            audio_mode: "muted",
+            loop: asset.asset_type === "image",
+          },
+        ],
+        broll_presentation: [
+          ...timelineTrackClips(draft, "broll_presentation"),
+          {
+            id: presentationId,
+            content_clip_id: clipId,
+            start_ms: startMs,
+            end_ms: startMs + durationMs,
+            duration_ms: durationMs,
+            source_in_ms: 0,
+            source_out_ms: durationMs,
+            mode: "rear_screen",
+            transition_duration_ms: 1_500,
+            keyframes: [
+              { time_ms: startMs, state: "rear_screen", easing: "ease_in_out" },
+              {
+                time_ms: startMs + durationMs,
+                state: "rear_screen",
+                easing: "ease_in_out",
+              },
+            ],
+          },
+        ],
+      },
+    });
+    setSelectedTrackClip({ trackName: "broll_content", clipId });
+  };
+  const removeSelectedClip = () => {
+    if (!draft?.tracks || !selectedTrackClip) return;
+    rememberDraft(draft);
+    const { trackName, clipId } = selectedTrackClip;
+    const nextTracks: Record<string, unknown> = {
+      ...draft.tracks,
+      [trackName]: timelineTrackClips(draft, trackName).filter((clip) => clip.id !== clipId),
+    };
+    if (trackName === "broll_content") {
+      nextTracks.broll_presentation = timelineTrackClips(
+        draft,
+        "broll_presentation",
+      ).filter((clip) => clip.content_clip_id !== clipId);
+    }
+    setDraft({ ...draft, tracks: nextTracks });
+    setSelectedTrackClip(null);
+  };
+  const duplicateSelectedClip = () => {
+    if (!draft?.tracks || !selectedTrackClip || !selectedClip) return;
+    const durationMs = Number(selectedClip.end_ms) - Number(selectedClip.start_ms);
+    const deltaMs = Math.min(
+      1_000,
+      Math.max(0, Number(draft.duration_ms ?? 0) - Number(selectedClip.end_ms)),
+    );
+    const copyId = `${selectedClip.id}-copy-${crypto.randomUUID()}`;
+    rememberDraft(draft);
+    const copy = {
+      ...selectedClip,
+      id: copyId,
+      start_ms: Number(selectedClip.start_ms) + deltaMs,
+      end_ms: Number(selectedClip.start_ms) + deltaMs + durationMs,
+    };
+    const nextTracks: Record<string, unknown> = {
+      ...draft.tracks,
+      [selectedTrackClip.trackName]: [
+        ...timelineTrackClips(draft, selectedTrackClip.trackName),
+        copy,
+      ],
+    };
+    if (selectedTrackClip.trackName === "broll_content") {
+      const linkedPresentation = timelineTrackClips(draft, "broll_presentation").find(
+        (clip) => clip.content_clip_id === selectedClip.id,
+      );
+      if (linkedPresentation) {
+        nextTracks.broll_presentation = [
+          ...timelineTrackClips(draft, "broll_presentation"),
+          {
+            ...linkedPresentation,
+            id: `${linkedPresentation.id}-copy-${crypto.randomUUID()}`,
+            content_clip_id: copyId,
+            start_ms: Number(linkedPresentation.start_ms) + deltaMs,
+            end_ms: Number(linkedPresentation.end_ms) + deltaMs,
+          },
+        ];
+      }
+    }
+    setDraft({ ...draft, tracks: nextTracks });
+    setSelectedTrackClip({ trackName: selectedTrackClip.trackName, clipId: copyId });
+  };
+  const snapTimelineMs = (
+    value: number,
+    snapshot: TimelinePayload,
+    excludedClipId: string,
+    bypass: boolean,
+  ) => {
+    const bounded = Math.min(Math.max(0, value), Number(snapshot.duration_ms ?? 0));
+    if (!snapEnabled || bypass) return Math.round(bounded);
+    const candidates = new Set<number>([
+      0,
+      Number(snapshot.duration_ms ?? 0),
+      Math.round(bounded / 100) * 100,
+    ]);
+    for (const segment of snapshot.segments ?? []) {
+      candidates.add(Number(segment.start_ms ?? 0));
+      candidates.add(Number(segment.end_ms ?? 0));
+    }
+    for (const [trackName] of DIRECTING_TRACK_LANES) {
+      for (const clip of timelineTrackClips(snapshot, trackName)) {
+        if (clip.id === excludedClipId) continue;
+        candidates.add(Number(clip.start_ms));
+        candidates.add(Number(clip.end_ms));
+      }
+    }
+    return [...candidates].reduce((nearest, candidate) =>
+      Math.abs(candidate - bounded) < Math.abs(nearest - bounded) ? candidate : nearest,
+    );
+  };
+  const beginClipPointerEdit = (
+    event: React.PointerEvent<HTMLElement>,
+    trackName: string,
+    clip: TimelineTrackClip,
+    mode: "move" | "trim-start" | "trim-end",
+  ) => {
+    if (!draft) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedTrackClip({ trackName, clipId: clip.id });
+    const rail = event.currentTarget.closest(".timelineLaneRail");
+    if (!(rail instanceof HTMLElement)) return;
+    const snapshot = cloneTimeline(draft);
+    const originX = event.clientX;
+    const railWidth = Math.max(1, rail.getBoundingClientRect().width);
+    const programmeDuration = Number(snapshot.duration_ms ?? 0);
+    const sourceStart = Number(clip.start_ms);
+    const sourceEnd = Number(clip.end_ms);
+    const onMove = (moveEvent: PointerEvent) => {
+      const deltaMs = ((moveEvent.clientX - originX) / railWidth) * programmeDuration;
+      let startMs = sourceStart;
+      let endMs = sourceEnd;
+      if (mode === "move") {
+        const boundedDelta = Math.min(
+          Math.max(deltaMs, -sourceStart),
+          programmeDuration - sourceEnd,
+        );
+        startMs = snapTimelineMs(
+          sourceStart + boundedDelta,
+          snapshot,
+          clip.id,
+          moveEvent.altKey,
+        );
+        endMs = startMs + sourceEnd - sourceStart;
+      } else if (mode === "trim-start") {
+        startMs = Math.min(
+          sourceEnd - 100,
+          snapTimelineMs(sourceStart + deltaMs, snapshot, clip.id, moveEvent.altKey),
+        );
+      } else {
+        endMs = Math.max(
+          sourceStart + 100,
+          snapTimelineMs(sourceEnd + deltaMs, snapshot, clip.id, moveEvent.altKey),
+        );
+      }
+      setDraft((current) => {
+        if (!current?.tracks) return current;
+        const update = (candidate: TimelineTrackClip) =>
+          candidate.id === clip.id
+            ? { ...candidate, start_ms: startMs, end_ms: endMs, duration_ms: endMs - startMs }
+            : candidate;
+        const nextTracks: Record<string, unknown> = {
+          ...current.tracks,
+          [trackName]: timelineTrackClips(current, trackName).map(update),
+        };
+        if (trackName === "broll_content") {
+          nextTracks.broll_presentation = timelineTrackClips(
+            current,
+            "broll_presentation",
+          ).map((presentation) =>
+            presentation.content_clip_id === clip.id
+              ? {
+                  ...presentation,
+                  start_ms: startMs,
+                  end_ms: endMs,
+                  duration_ms: endMs - startMs,
+                }
+              : presentation,
+          );
+        }
+        return { ...current, tracks: nextTracks };
+      });
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      setUndoStack((history) => [...history.slice(-29), snapshot]);
+      setRedoStack([]);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp, { once: true });
+  };
+
+  React.useEffect(() => {
+    if (!selectedBrollAsset || !selectedClip || !brollPreviewRef.current) return;
+    if (playheadMs < selectedClip.start_ms || playheadMs > selectedClip.end_ms) return;
+    const sourceMs =
+      Number(selectedClip.source_in_ms ?? 0) + playheadMs - Number(selectedClip.start_ms);
+    brollPreviewRef.current.currentTime = Math.max(0, sourceMs / 1000);
+  }, [playheadMs, selectedBrollAsset?.id, selectedClip?.id]);
   const directingClips = DIRECTING_TRACK_LANES.flatMap(([trackName]) =>
     timelineTrackClips(draft, trackName),
   );
+  const timelineValidationErrors: string[] = [];
+  const programmeDurationMs = Number(draft?.duration_ms ?? 0);
+  for (const clip of directingClips) {
+    if (
+      Number(clip.start_ms) < 0 ||
+      Number(clip.end_ms) <= Number(clip.start_ms) ||
+      Number(clip.end_ms) > programmeDurationMs
+    ) {
+      timelineValidationErrors.push(`${clip.id}: keep the clip inside the programme.`);
+    }
+    if (
+      clip.source_out_ms != null &&
+      Number(clip.source_out_ms) <= Number(clip.source_in_ms ?? 0)
+    ) {
+      timelineValidationErrors.push(`${clip.id}: source out must follow source in.`);
+    }
+  }
+  const contentIds = new Set(
+    timelineTrackClips(draft, "broll_content").map((clip) => clip.id),
+  );
+  for (const presentation of timelineTrackClips(draft, "broll_presentation")) {
+    if (presentation.content_clip_id && !contentIds.has(presentation.content_clip_id)) {
+      timelineValidationErrors.push(
+        `${presentation.id}: reconnect it to a B-roll content clip.`,
+      );
+    }
+    for (const graphic of timelineTrackClips(draft, "screen_graphics")) {
+      if (
+        graphic.kind === "show_identity" &&
+        Math.max(presentation.start_ms, graphic.start_ms) <
+          Math.min(presentation.end_ms, graphic.end_ms)
+      ) {
+        timelineValidationErrors.push(
+          `${presentation.id}: move B-roll outside the branded introduction.`,
+        );
+      }
+    }
+  }
+  for (const camera of timelineTrackClips(draft, "camera_direction")) {
+    if (camera.action === "pan_to_participant" && !camera.target_participant_id) {
+      timelineValidationErrors.push(`${camera.id}: choose the participant to pan to.`);
+    }
+    if (
+      camera.angle_id &&
+      camera.angle_id !== "frontal" &&
+      !approvedCameraPlates.some(
+        (asset) =>
+          asset.id === camera.camera_plate_asset_id &&
+          asset.generation_metadata?.angle_id === camera.angle_id,
+      )
+    ) {
+      timelineValidationErrors.push(`${camera.id}: choose an approved calibrated angle.`);
+    }
+  }
   const validDraft = Boolean(
     draft?.transcript_version_id &&
     segments.length > 0 &&
@@ -23555,14 +24178,7 @@ function TimelineEditorPanel(props: {
         Number.isFinite(Number(segment.end_ms)) &&
         Number(segment.end_ms) > Number(segment.start_ms),
     ) &&
-      directingClips.every(
-        (clip) =>
-          Number(clip.start_ms) >= 0 &&
-          Number(clip.end_ms) > Number(clip.start_ms) &&
-          Number(clip.end_ms) <= Number(draft.duration_ms ?? 0) &&
-          (clip.source_out_ms == null ||
-            Number(clip.source_out_ms) > Number(clip.source_in_ms ?? 0)),
-      ),
+      timelineValidationErrors.length === 0,
   );
 
   return (
@@ -23575,13 +24191,235 @@ function TimelineEditorPanel(props: {
         <div className="emptyState">No editable timeline asset.</div>
       ) : (
         <>
+          <div className="cameraPlateWorkbench">
+            <div className="timelineSourceLibraryHeader">
+              <div>
+                <strong>Studio camera plates</strong>
+                <span>
+                  Upload a complete angle, drag its screen, desk, and seat anchors, then
+                  approve it for camera clips.
+                </span>
+              </div>
+              <span>{approvedCameraPlates.length} approved</span>
+            </div>
+            <div className="cameraPlateUploadRow">
+              <label className="field">
+                <span>Angle ID</span>
+                <input
+                  onChange={(event) =>
+                    setCameraPlateAngleId(
+                      event.target.value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-"),
+                    )
+                  }
+                  value={cameraPlateAngleId}
+                />
+              </label>
+              <label
+                className={`uploadButton ${props.isManagingCameraPlates ? "disabled" : ""}`}
+              >
+                <Upload size={16} /> Upload angle
+                <input
+                  accept="image/png,image/jpeg,image/webp"
+                  className="srOnlyFile"
+                  disabled={props.isManagingCameraPlates || !cameraPlateAngleId}
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0];
+                    event.currentTarget.value = "";
+                    if (!file) return;
+                    props.onUploadCameraPlate(
+                      file,
+                      cameraPlateAngleId,
+                      defaultCameraPlateCalibration(
+                        props.episode?.participants ?? [],
+                      ) as unknown as Record<string, unknown>,
+                    );
+                  }}
+                  type="file"
+                />
+              </label>
+              <label className="field">
+                <span>Plate to calibrate</span>
+                <select
+                  onChange={(event) => setSelectedCameraPlateId(event.target.value || null)}
+                  value={selectedCameraPlateId ?? ""}
+                >
+                  <option value="">No plate selected</option>
+                  {cameraPlateAssets.map((plate) => (
+                    <option key={plate.id} value={plate.id}>
+                      {String(plate.generation_metadata?.angle_id)} · {String(
+                        (plate.generation_metadata?.review as Record<string, unknown> | undefined)
+                          ?.decision ?? "pending",
+                      )}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            {selectedCameraPlate ? (
+              <div className="cameraCalibrationGrid">
+                <div className="cameraCalibrationCanvas">
+                  <img
+                    alt={`${String(
+                      selectedCameraPlate.generation_metadata?.angle_id,
+                    )} studio camera plate`}
+                    src={
+                      episodeAssetDownloadUrlById(
+                        props.episode?.id,
+                        selectedCameraPlate.id,
+                      ) ?? undefined
+                    }
+                  />
+                  <svg aria-label="Camera plate calibration overlay" viewBox="0 0 1000 562.5">
+                    <polygon
+                      className="screenCalibrationPolygon"
+                      points={cameraCalibration.rear_screen_quadrilateral
+                        .map((point) => `${point.x * 1000},${point.y * 562.5}`)
+                        .join(" ")}
+                    />
+                    <polygon
+                      className="deskCalibrationPolygon"
+                      points={cameraCalibration.desk_occlusion_polygon
+                        .map((point) => `${point.x * 1000},${point.y * 562.5}`)
+                        .join(" ")}
+                    />
+                    {cameraCalibration.rear_screen_quadrilateral.map((point, index) => (
+                      <circle
+                        className="screenCalibrationPoint"
+                        cx={point.x * 1000}
+                        cy={point.y * 562.5}
+                        key={`screen-${index}`}
+                        onPointerDown={(event) =>
+                          beginCalibrationPointDrag(event, "screen", index)
+                        }
+                        r={9}
+                      />
+                    ))}
+                    {cameraCalibration.desk_occlusion_polygon.map((point, index) => (
+                      <circle
+                        className="deskCalibrationPoint"
+                        cx={point.x * 1000}
+                        cy={point.y * 562.5}
+                        key={`desk-${index}`}
+                        onPointerDown={(event) =>
+                          beginCalibrationPointDrag(event, "desk", index)
+                        }
+                        r={9}
+                      />
+                    ))}
+                    {Object.entries(cameraCalibration.seat_anchors).map(
+                      ([participantId, point]) => (
+                        <g key={participantId}>
+                          <circle
+                            className="seatCalibrationPoint"
+                            cx={point.x * 1000}
+                            cy={point.y * 562.5}
+                            onPointerDown={(event) =>
+                              beginCalibrationPointDrag(event, "seat", participantId)
+                            }
+                            r={11}
+                          />
+                          <text x={point.x * 1000 + 14} y={point.y * 562.5 - 10}>
+                            {participantId}
+                          </text>
+                        </g>
+                      ),
+                    )}
+                  </svg>
+                </div>
+                <div className="cameraCalibrationInspector">
+                  <strong>Calibration</strong>
+                  <span>Red: rear screen · amber: desk mask · teal: seat anchors</span>
+                  <span>
+                    Drag every marker onto the photographed geometry. Approval records
+                    these exact normalized coordinates.
+                  </span>
+                  <div className="inlineActions">
+                    <button
+                      className="primaryButton compact"
+                      disabled={props.isManagingCameraPlates}
+                      onClick={() =>
+                        props.onReviewCameraPlate(
+                          selectedCameraPlate.id,
+                          "approved",
+                          cameraCalibration as unknown as Record<string, unknown>,
+                        )
+                      }
+                      type="button"
+                    >
+                      Approve calibrated angle
+                    </button>
+                    <button
+                      className="dangerButton compact"
+                      disabled={props.isManagingCameraPlates}
+                      onClick={() =>
+                        props.onReviewCameraPlate(selectedCameraPlate.id, "rejected")
+                      }
+                      type="button"
+                    >
+                      Reject
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+          <div className="timelineSourceLibrary" aria-label="B-roll source library">
+            <div className="timelineSourceLibraryHeader">
+              <div>
+                <strong>Source library</strong>
+                <span>Add reviewed media at the playhead, then trim it on the timeline.</span>
+              </div>
+              <span>{eligibleBrollAssets.length} eligible sources</span>
+            </div>
+            <div className="timelineSourceLibraryGrid">
+              {eligibleBrollAssets.map((asset) => {
+                const url = episodeAssetDownloadUrlById(props.episode?.id, asset.id);
+                return (
+                  <article className="timelineSourceCard" key={asset.id}>
+                    {asset.mime_type?.startsWith("video/") || asset.asset_type === "video" ? (
+                      <video muted preload="metadata" src={url ?? undefined} />
+                    ) : (
+                      <img alt="" loading="lazy" src={url ?? undefined} />
+                    )}
+                    <div>
+                      <strong>
+                        {String(asset.generation_metadata?.visual_role ?? asset.asset_type)}
+                      </strong>
+                      <span>
+                        {formatPrimerTimestamp(Number(asset.duration_ms ?? 0))} · {shortId(asset.id)}
+                      </span>
+                    </div>
+                    <button onClick={() => addBrollAssetToTimeline(asset)} type="button">
+                      Add at playhead
+                    </button>
+                  </article>
+                );
+              })}
+            </div>
+          </div>
           <div className="timelineToolbar">
             <div>
               <strong>Directing tracks</strong>
-              <span>Click a clip to trim it, shift it, or inspect its source.</span>
+              <span>Drag clips or their handles. Hold Alt to bypass snapping.</span>
+            </div>
+            <div className="timelineToolbarActions">
+              <button disabled={!undoStack.length} onClick={undoTimelineEdit} type="button">
+                Undo
+              </button>
+              <button disabled={!redoStack.length} onClick={redoTimelineEdit} type="button">
+                Redo
+              </button>
+              <button
+                aria-pressed={snapEnabled}
+                className={snapEnabled ? "selected" : ""}
+                onClick={() => setSnapEnabled((current) => !current)}
+                type="button"
+              >
+                Snap {snapEnabled ? "on" : "off"}
+              </button>
             </div>
             <div className="timelineZoomControls" aria-label="Timeline zoom">
-              {[1, 2, 4].map((zoom) => (
+              {[0, 1, 2, 4].map((zoom) => (
                 <button
                   aria-pressed={timelineZoom === zoom}
                   className={timelineZoom === zoom ? "selected" : ""}
@@ -23589,7 +24427,7 @@ function TimelineEditorPanel(props: {
                   onClick={() => setTimelineZoom(zoom)}
                   type="button"
                 >
-                  {zoom}x
+                  {zoom === 0 ? "Fit" : `${zoom}x`}
                 </button>
               ))}
             </div>
@@ -23599,13 +24437,26 @@ function TimelineEditorPanel(props: {
               <strong>Time</strong>
               <div
                 className="timelineRuler"
-                style={{ minWidth: `${Math.max(560, 560 * timelineZoom)}px` }}
+                onClick={(event) => {
+                  const bounds = event.currentTarget.getBoundingClientRect();
+                  setPlayheadMs(
+                    Math.round(
+                      ((event.clientX - bounds.left) / Math.max(1, bounds.width)) *
+                        Number(draft.duration_ms ?? 0),
+                    ),
+                  );
+                }}
+                style={{ minWidth: `${Math.max(560, 560 * Math.max(1, timelineZoom))}px` }}
               >
                 {[0, 0.25, 0.5, 0.75, 1].map((position) => (
                   <span key={position} style={{ left: `${position * 100}%` }}>
                     {formatPrimerTimestamp(Number(draft.duration_ms ?? 0) * position)}
                   </span>
                 ))}
+                <i
+                  className="timelinePlayhead"
+                  style={{ left: `${(playheadMs / Math.max(1, Number(draft.duration_ms))) * 100}%` }}
+                />
               </div>
             </div>
             {DIRECTING_TRACK_LANES.map(([trackName, label]) => {
@@ -23616,8 +24467,24 @@ function TimelineEditorPanel(props: {
                   <strong>{label}</strong>
                   <div
                     className="timelineLaneRail"
-                    style={{ minWidth: `${Math.max(560, 560 * timelineZoom)}px` }}
+                    onClick={(event) => {
+                      if (event.target !== event.currentTarget) return;
+                      const bounds = event.currentTarget.getBoundingClientRect();
+                      setPlayheadMs(
+                        Math.round(
+                          ((event.clientX - bounds.left) / Math.max(1, bounds.width)) *
+                            durationMs,
+                        ),
+                      );
+                    }}
+                    style={{
+                      minWidth: `${Math.max(560, 560 * Math.max(1, timelineZoom))}px`,
+                    }}
                   >
+                    <i
+                      className="timelinePlayhead"
+                      style={{ left: `${(playheadMs / durationMs) * 100}%` }}
+                    />
                     {clips.map((clip) => {
                       const left = Math.max(0, (Number(clip.start_ms) / durationMs) * 100);
                       const width = Math.max(
@@ -23626,7 +24493,7 @@ function TimelineEditorPanel(props: {
                           100,
                       );
                       return (
-                        <button
+                        <div
                           aria-label={`${label} clip ${clip.id}`}
                           className={`timelineLaneClip ${
                             selectedTrackClip?.trackName === trackName &&
@@ -23635,17 +24502,46 @@ function TimelineEditorPanel(props: {
                               : ""
                           }`}
                           key={clip.id}
+                          onKeyDown={(event) => {
+                            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                            event.preventDefault();
+                            const direction = event.key === "ArrowLeft" ? -1 : 1;
+                            shiftTrackClip(
+                              trackName,
+                              clip.id,
+                              direction * (event.shiftKey ? 1_000 : 100),
+                            );
+                          }}
                           onClick={() => {
                             setSelectedTrackClip({ trackName, clipId: clip.id });
                             if (clip.linked_segment_id) {
                               setSelectedSegmentId(clip.linked_segment_id);
                             }
                           }}
+                          onPointerDown={(event) =>
+                            beginClipPointerEdit(event, trackName, clip, "move")
+                          }
+                          role="button"
                           style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%` }}
+                          tabIndex={0}
                           title={`${clip.id} · ${clip.start_ms}-${clip.end_ms}ms`}
                         >
+                          <span
+                            aria-hidden="true"
+                            className="timelineTrimHandle start"
+                            onPointerDown={(event) =>
+                              beginClipPointerEdit(event, trackName, clip, "trim-start")
+                            }
+                          />
                           {clip.participant_id ?? clip.speaker_participant_id ?? clip.id}
-                        </button>
+                          <span
+                            aria-hidden="true"
+                            className="timelineTrimHandle end"
+                            onPointerDown={(event) =>
+                              beginClipPointerEdit(event, trackName, clip, "trim-end")
+                            }
+                          />
+                        </div>
                       );
                     })}
                   </div>
@@ -23798,6 +24694,89 @@ function TimelineEditorPanel(props: {
                       <option value="fly_in">Fly in</option>
                       <option value="pan_left">Pan left</option>
                       <option value="pan_right">Pan right</option>
+                      <option value="pan_to_participant">Pan to participant</option>
+                    </select>
+                  </label>
+                  {selectedClip.action === "pan_to_participant" ? (
+                    <>
+                      <label className="field">
+                        <span>From participant</span>
+                        <select
+                          onChange={(event) =>
+                            updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
+                              from_participant_id: event.target.value || null,
+                            })
+                          }
+                          value={String(selectedClip.from_participant_id ?? "")}
+                        >
+                          <option value="">Current speaker</option>
+                          {(props.episode?.participants ?? []).map((participant) => (
+                            <option key={participant.id} value={participant.id}>
+                              {participant.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="field">
+                        <span>Pan to</span>
+                        <select
+                          onChange={(event) =>
+                            updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
+                              target_participant_id: event.target.value || null,
+                            })
+                          }
+                          value={String(selectedClip.target_participant_id ?? "")}
+                        >
+                          <option value="">Choose participant</option>
+                          {(props.episode?.participants ?? []).map((participant) => (
+                            <option key={participant.id} value={participant.id}>
+                              {participant.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </>
+                  ) : null}
+                  <label className="field">
+                    <span>Camera angle</span>
+                    <select
+                      onChange={(event) => {
+                        const asset = approvedCameraPlates.find(
+                          (plate) =>
+                            String(plate.generation_metadata?.angle_id) === event.target.value,
+                        );
+                        updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
+                          angle_id: event.target.value,
+                          camera_plate_asset_id: asset?.id ?? null,
+                        });
+                      }}
+                      value={String(selectedClip.angle_id ?? "frontal")}
+                    >
+                      <option value="frontal">Frontal virtual camera</option>
+                      {approvedCameraPlates.map((plate) => (
+                        <option
+                          key={plate.id}
+                          value={String(plate.generation_metadata?.angle_id)}
+                        >
+                          {String(plate.generation_metadata?.angle_id)} · approved
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Easing</span>
+                    <select
+                      onChange={(event) =>
+                        updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
+                          easing: event.target.value,
+                        })
+                      }
+                      value={String(selectedClip.easing ?? "ease_in_out")}
+                    >
+                      <option value="linear">Linear</option>
+                      <option value="ease_in">Ease in</option>
+                      <option value="ease_out">Ease out</option>
+                      <option value="ease_in_out">Ease in and out</option>
                     </select>
                   </label>
                 </>
@@ -23863,6 +24842,12 @@ function TimelineEditorPanel(props: {
                   type="button"
                 >
                   +1s
+                </button>
+                <button onClick={duplicateSelectedClip} type="button">
+                  Duplicate
+                </button>
+                <button className="dangerButton" onClick={removeSelectedClip} type="button">
+                  Remove
                 </button>
                 <button className="secondaryButton" onClick={() => setSelectedTrackClip(null)}>
                   Close
@@ -24014,6 +24999,18 @@ function TimelineEditorPanel(props: {
         </>
       )}
       <div className="editorActions">
+        {timelineValidationErrors.length ? (
+          <div className="timelineValidation" role="alert">
+            <strong>Fix before saving</strong>
+            <ul>
+              {[...new Set(timelineValidationErrors)].map((error) => (
+                <li key={error}>{error}</li>
+              ))}
+            </ul>
+          </div>
+        ) : (
+          <span className="timelineSavedState">Timeline is valid and ready to save.</span>
+        )}
         <button
           className="primaryButton"
           disabled={!validDraft || props.isSaving || !draft}
@@ -24054,6 +25051,7 @@ function defaultMediaDirectingSettings(): MediaDirectingSettings {
       "fly_in",
       "pan_left",
       "pan_right",
+      "pan_to_participant",
     ],
   };
 }
@@ -30105,6 +31103,7 @@ function defaultProjectDraft(): ProjectDraft {
     description: "",
     default_language: "en",
     default_show_format_id: "analytical_panel_v1",
+    show_name: "",
   };
 }
 
@@ -30115,6 +31114,7 @@ function projectToDraft(project: Project): ProjectDraft {
     description: project.description,
     default_language: project.default_language,
     default_show_format_id: project.default_show_format_id,
+    show_name: project.branding?.show_name ?? "",
   };
 }
 
@@ -30124,11 +31124,13 @@ function ProjectPanel(props: {
   isDeleting: boolean;
   isLoading: boolean;
   isSaving: boolean;
+  isUploadingLogo: boolean;
   onDelete: (projectId: string) => void;
   onSave: (payload: {
     originalId: string | null;
     project: Record<string, unknown>;
   }) => void;
+  onUploadLogo: (projectId: string, file: File) => void;
 }) {
   const [draft, setDraft] = React.useState<ProjectDraft>(defaultProjectDraft);
   const updateDraft = <K extends keyof ProjectDraft>(
@@ -30151,6 +31153,7 @@ function ProjectPanel(props: {
   }, [props.episodes]);
   const saveProject = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const existingProject = props.projects.find((project) => project.id === draft.originalId);
     props.onSave({
       originalId: draft.originalId,
       project: {
@@ -30159,6 +31162,10 @@ function ProjectPanel(props: {
         default_language: draft.default_language.trim() || "en",
         default_show_format_id:
           draft.default_show_format_id.trim() || "analytical_panel_v1",
+        branding: {
+          show_name: draft.show_name.trim() || null,
+          logo: existingProject?.branding?.logo ?? null,
+        },
       },
     });
   };
@@ -30214,6 +31221,33 @@ function ProjectPanel(props: {
             onChange={(event) => updateDraft("description", event.target.value)}
           />
         </label>
+        <label className="field wide">
+          <span>Show name on the studio screen</span>
+          <input
+            maxLength={256}
+            placeholder="Uses the project name when empty"
+            value={draft.show_name}
+            onChange={(event) => updateDraft("show_name", event.target.value)}
+          />
+        </label>
+        <label className="field wide">
+          <span>Show logo</span>
+          <input
+            accept="image/png,image/jpeg,image/webp"
+            disabled={!draft.originalId || props.isUploadingLogo}
+            type="file"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file && draft.originalId) props.onUploadLogo(draft.originalId, file);
+              event.currentTarget.value = "";
+            }}
+          />
+          <small>
+            {draft.originalId
+              ? "PNG, JPEG, or WebP; normalized and stored immutably."
+              : "Save the project before uploading its logo."}
+          </small>
+        </label>
         <div className="modelEndpointActions">
           <span>{draft.originalId ? "editing project" : "new project"}</span>
           <button
@@ -30234,7 +31268,8 @@ function ProjectPanel(props: {
               <div>
                 <strong>{project.name}</strong>
                 <span>
-                  {project.default_language} · {project.default_show_format_id}
+                  {project.default_language} · {project.default_show_format_id} ·{" "}
+                  {project.branding?.logo ? "custom logo" : "bundled logo"}
                 </span>
               </div>
               <div className="turnActions">

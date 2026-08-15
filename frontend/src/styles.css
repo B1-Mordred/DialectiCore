@@ -3673,6 +3673,196 @@ button {
   overflow-x: auto;
 }
 
+.timelineSourceLibrary {
+  display: grid;
+  gap: 12px;
+  margin: 14px 14px 0;
+  padding: 14px;
+  border: 1px solid #dde4e7;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.cameraPlateWorkbench {
+  display: grid;
+  gap: 14px;
+  margin: 14px 14px 0;
+  padding: 14px;
+  border: 1px solid #cbd5da;
+  border-radius: 8px;
+  background: #f8fafb;
+}
+
+.cameraPlateUploadRow {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto minmax(220px, 1fr);
+  gap: 12px;
+  align-items: end;
+}
+
+.cameraCalibrationGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(220px, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.cameraCalibrationCanvas {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid #94a3b8;
+  border-radius: 7px;
+  background: #0f172a;
+}
+
+.cameraCalibrationCanvas img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+}
+
+.cameraCalibrationCanvas svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.cameraCalibrationCanvas polygon {
+  stroke-width: 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.screenCalibrationPolygon {
+  fill: rgb(220 38 38 / 15%);
+  stroke: #ef4444;
+}
+
+.deskCalibrationPolygon {
+  fill: rgb(245 158 11 / 18%);
+  stroke: #f59e0b;
+}
+
+.cameraCalibrationCanvas circle {
+  stroke: #fff;
+  stroke-width: 3;
+  cursor: move;
+  vector-effect: non-scaling-stroke;
+}
+
+.screenCalibrationPoint {
+  fill: #dc2626;
+}
+
+.deskCalibrationPoint {
+  fill: #d97706;
+}
+
+.seatCalibrationPoint {
+  fill: #0f766e;
+}
+
+.cameraCalibrationCanvas text {
+  fill: #fff;
+  font-size: 18px;
+  font-weight: 700;
+  paint-order: stroke;
+  stroke: #0f172a;
+  stroke-width: 4px;
+  pointer-events: none;
+}
+
+.cameraCalibrationInspector {
+  display: grid;
+  gap: 10px;
+  color: #52616b;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.timelineSourceLibraryHeader,
+.timelineToolbarActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.timelineSourceLibraryHeader > div {
+  display: grid;
+  gap: 3px;
+}
+
+.timelineSourceLibraryHeader span,
+.timelineSourceCard span {
+  color: #64717a;
+  font-size: 12px;
+}
+
+.timelineSourceLibraryGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+  max-height: 310px;
+  overflow-y: auto;
+}
+
+@media (max-width: 860px) {
+  .cameraPlateUploadRow,
+  .cameraCalibrationGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.timelineSourceCard {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid #dde4e7;
+  border-radius: 7px;
+  background: #f8fafb;
+}
+
+.timelineSourceCard img,
+.timelineSourceCard video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 5px;
+  background: #0f172a;
+  object-fit: cover;
+}
+
+.timelineSourceCard > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.timelineSourceCard button,
+.timelineToolbarActions button {
+  min-height: 34px;
+  border: 1px solid #cbd5da;
+  border-radius: 5px;
+  padding: 6px 10px;
+  background: #fff;
+  color: #31424c;
+  cursor: pointer;
+}
+
+.timelineSourceCard button:hover,
+.timelineToolbarActions button.selected {
+  border-color: #0f766e;
+  background: #dff2ef;
+  color: #174f4a;
+}
+
+.timelineToolbarActions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .timelineToolbar {
   display: flex;
   align-items: center;
@@ -3738,6 +3928,28 @@ button {
   background-size: 10% 100%;
 }
 
+.timelinePlayhead {
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-1px);
+  background: #dc2626;
+  pointer-events: none;
+}
+
+.timelineRuler .timelinePlayhead::before {
+  position: absolute;
+  top: 0;
+  left: -4px;
+  width: 10px;
+  height: 7px;
+  border-radius: 0 0 4px 4px;
+  background: #dc2626;
+  content: "";
+}
+
 .timelineRuler {
   position: relative;
   height: 28px;
@@ -3777,6 +3989,26 @@ button {
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
+  user-select: none;
+  touch-action: none;
+}
+
+.timelineTrimHandle {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  background: rgb(15 118 110 / 18%);
+  cursor: ew-resize;
+}
+
+.timelineTrimHandle.start {
+  left: 0;
+}
+
+.timelineTrimHandle.end {
+  right: 0;
 }
 
 .timelineLaneClip.selected,
@@ -3821,6 +4053,23 @@ button {
   max-height: 180px;
   border-radius: 5px;
   background: #020617;
+}
+
+.timelineValidation {
+  max-width: 70ch;
+  margin-right: auto;
+  color: #991b1b;
+}
+
+.timelineValidation ul {
+  margin: 5px 0 0;
+  padding-left: 18px;
+}
+
+.timelineSavedState {
+  margin-right: auto;
+  color: #166534;
+  font-size: 13px;
 }
 
 .timelineClipActions,
