@@ -42,6 +42,7 @@ retained when supplied but are optional and never block editing or rendering.
 - [x] (2026-08-15 10:51Z) Completed the resumable 21-turn full-production animation batch through the managed B1 media API. Preserved two valid first-attempt jobs, cancelled the remaining queued invalid-header jobs, normalized all upload-only WAV headers, and completed 300.377 seconds of dialogue with zero failures in the corrected batch.
 - [x] (2026-08-15 10:56Z) Rendered, checksum-verified, technically qualified, registered, and browser-played the complete 364.333-second Production v2 preview as separate episode `9d145344-82c9-46cc-b4c1-661d95f0bf56`; its human preview approval remains pending before final render and packaging.
 - [x] (2026-08-15 12:03Z) Re-composited all 21 turns without rerunning B1 animation, inset the cast over the physical desk, directed turns 1 and 21 as total-studio establishing views, passed full technical QC, registered immutable preview revision 2, and browser-verified playback plus 134 caption cues. Revision 1 remains preserved as superseded evidence.
+- [x] (2026-08-15 13:03Z) Produced and browser-qualified preview revision 5 with positive desk-contact overlap, opening fly-in and closing pull-back, reusable optional virtual camera presets, and a valid editable v5 timeline. Added a zoomable parallel-track editor with B-roll video preview, frame-selected in/out points, source/timeline ranges, placement nudges, presentation mode, transition controls, and programme-boundary validation.
 - [ ] Human-approve the complete v2 preview, then create and approve the final render, thumbnail, package, manifest, dry-run publish record, and recovery test without replacing v1.
 - [ ] Commit and push intentional checkpoints, obtain green CI, verify deployed/local/remote source provenance, and record exact v2 artifacts and limitations.
 
@@ -182,6 +183,12 @@ retained when supplied but are optional and never block editing or rendering.
   rectangular foreground occlusion begins.
   Evidence: revision-1 introduction/conclusion frames and deterministic FFmpeg
   alpha bounding boxes from the normalized masters.
+- Observation: the first registered custom timelines exposed parallel tracks
+  but omitted scene `end_ms`, `transcript_version_id`, and registered B-roll
+  asset links, leaving Save Timeline disabled and preventing source preview.
+  Evidence: revision-3 Playwright inspection showed a disabled Save button;
+  revision 5 exposes a valid v5 timeline, five shared immutable B-roll links,
+  an enabled Save button, and a playable 508.371-second source preview.
 
 ## Decision Log
 
@@ -275,18 +282,26 @@ retained when supplied but are optional and never block editing or rendering.
   Rationale: this fixes the visible torso/table contradiction and requested
   opening/closing grammar without rerunning animation or changing identities.
   Date/Author: 2026-08-15 / user review and Codex.
+- Decision: distinguish virtual moves from genuine camera-angle changes. Offer
+  fly-in, push, pull, and lateral pan presets over the existing 2D plate; keep
+  true angle changes dependent on additional generated camera plates or a 3D
+  scene rather than labelling a crop as a new angle.
+  Rationale: the user should get useful optional motion now without a false
+  directing contract that the renderer cannot reproduce.
+  Date/Author: 2026-08-15 / Codex.
 
 ## Outcomes & Retrospective
 
-Preview revision 2 addresses the second human-review pass without changing the
-qualified character performances or dialogue audio. Its registered render asset
-is `8db5b605-53f7-4ee0-b3a6-cd334ac810cc`, checksum
-`sha256:c60a0bb25db9418712c9132b191a8cdfc8ec793a3a96f58e0c0c2f257c562c1a`,
-and approval `abf517f6-37dc-442e-97a0-40a02295ee28` remains pending. Browser
+Preview revision 5 now addresses the second and third human-review passes
+without changing the qualified character performances or dialogue audio. Its
+registered render asset is `c20a0d48-2ba0-486f-affb-ad7e5788a918`, checksum
+`sha256:f317348de95c770284b267aeb9467e95d29b0f5c80d012c778f88ec9a12fda48`,
+and approval `6d87887a-3339-4a8f-9acc-fa48f71568e0` remains pending. Browser
 evidence confirms a playable 364.333-second render, a 134-cue selectable German
-caption track, and total-studio opening and conclusion frames with every torso
-contained behind the desk. Revision 1's render, timeline, and approval are
-preserved and explicitly superseded rather than overwritten.
+caption track, positive edge-character desk contact, total-studio opening and
+conclusion frames with gentle virtual motion, and an enabled, previewable
+parallel timeline editor. Revisions 1 through 3 remain preserved and explicitly
+superseded rather than overwritten.
 
 Transport, normalization, animation selection, active-speaker camera policy,
 parallel directing tracks, render materialization, and the integrated

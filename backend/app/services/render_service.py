@@ -607,9 +607,7 @@ class RenderService:
             (active_keyframe or {}).get("transition_duration_ms")
         )
         if transition_duration_ms is None:
-            transition_duration_ms = self._optional_int(
-                presentation.get("transition_duration_ms")
-            )
+            transition_duration_ms = self._optional_int(presentation.get("transition_duration_ms"))
         transition_duration_ms = max(0, min(5_000, transition_duration_ms or 0))
         content_source_start_ms = int(content.get("source_in_ms") or 0) + max(
             0, piece_start_ms - int(content.get("start_ms") or 0)
@@ -1858,6 +1856,30 @@ class RenderService:
                 "easing": "ease_in_out",
                 "cross_scene": True,
                 "motion_primitives": ["opacity_ramp"],
+            },
+            "fly_in": {
+                "name": "studio_fly_in",
+                "type": "fade_in",
+                "duration_ms": 400,
+                "easing": "ease_out",
+                "cross_scene": True,
+                "motion_primitives": ["opacity_ramp", "virtual_camera_zoom"],
+            },
+            "pan_left": {
+                "name": "virtual_camera_pan_left",
+                "type": "fade_in",
+                "duration_ms": 250,
+                "easing": "ease_in_out",
+                "cross_scene": True,
+                "motion_primitives": ["opacity_ramp", "virtual_camera_pan"],
+            },
+            "pan_right": {
+                "name": "virtual_camera_pan_right",
+                "type": "fade_in",
+                "duration_ms": 250,
+                "easing": "ease_in_out",
+                "cross_scene": True,
+                "motion_primitives": ["opacity_ramp", "virtual_camera_pan"],
             },
             "reaction_cutaway": {
                 "name": "reaction_cutaway_snap",
@@ -4050,7 +4072,11 @@ class RenderService:
         virtual_camera: dict | None = None,
     ) -> str:
         base_filter = (
-            self._seated_panel_virtual_camera_filter(preset, virtual_camera)
+            self._seated_panel_virtual_camera_filter(
+                preset,
+                virtual_camera,
+                duration_seconds=piece_duration_seconds,
+            )
             if virtual_camera is not None
             else self._visual_normalization_filter(preset)
         )
@@ -4080,7 +4106,9 @@ class RenderService:
         ):
             return None
         view = str(direction.get("view") or segment.get("camera_view") or "establishing_wide")
-        if view == "establishing_wide":
+        action = str(direction.get("action") or segment.get("camera_action") or "cut")
+        motion_actions = {"fly_in", "slow_push", "slow_pull", "pan_left", "pan_right"}
+        if view == "establishing_wide" and action not in motion_actions:
             return None
         primary = asset_by_id.get(str(segment.get("video_asset_id") or ""))
         if (
@@ -4120,15 +4148,16 @@ class RenderService:
         # camera on the first (speaker) position.
         focus_x, focus_y = positions[0]
         scale_by_view = {
+            "establishing_wide": 1.0,
             "panel_two_shot": 1.24,
             "speaker_medium": 1.48,
             "speaker_close_up": 1.92,
             "reaction": 1.48,
         }
         scale = scale_by_view.get(view, 1.0)
-        if str(direction.get("action") or segment.get("camera_action") or "") == "slow_push":
+        if action == "slow_push":
             scale *= 1.04
-        if scale <= 1.0:
+        if scale <= 1.0 and action not in motion_actions:
             return None
         normalized_pair_ids = [
             participant_id
@@ -4136,7 +4165,7 @@ class RenderService:
             if participant_id and participant_id != speaker_id
         ]
         return {
-            "schema_version": "dialecticore.virtual_camera.v2",
+            "schema_version": "dialecticore.virtual_camera.v3",
             "view": view,
             "scale": round(scale, 4),
             "focus_x": round(min(0.96, max(0.04, focus_x)), 5),
@@ -4144,6 +4173,7 @@ class RenderService:
             "focus_source": "active_speaker_face_region_or_seating_plan",
             "speaker_participant_id": speaker_id or None,
             "context_participant_ids": normalized_pair_ids,
+            "motion": action if action in motion_actions else None,
             "framing_policy": {
                 "speaker_target_frame_x": 0.5,
                 "speaker_allowed_frame_x": [0.45, 0.55],
@@ -4253,6 +4283,7 @@ class RenderService:
         self,
         preset: RenderPreset,
         virtual_camera: dict,
+        duration_seconds: float | None = None,
     ) -> str:
         scale = self._optional_float(virtual_camera.get("scale")) or 1.0
         focus_x = self._optional_float(virtual_camera.get("focus_x")) or 0.5
@@ -4260,6 +4291,35 @@ class RenderService:
         scale = min(2.2, max(1.01, scale))
         focus_x = min(0.96, max(0.04, focus_x))
         focus_y = min(0.92, max(0.08, focus_y))
+        motion = str(virtual_camera.get("motion") or "")
+        if motion in {"fly_in", "slow_push", "slow_pull", "pan_left", "pan_right"}:
+            frame_count = max(
+                1,
+                round(max(0.001, float(duration_seconds or 0.001)) * preset.fps),
+            )
+            progress = f"on/{max(1, frame_count - 1)}"
+            if motion == "fly_in":
+                start_scale, end_scale = 1.0, max(1.08, scale)
+            elif motion == "slow_pull":
+                start_scale, end_scale = min(2.2, scale * 1.04), scale
+            elif motion == "slow_push":
+                start_scale, end_scale = max(1.0, scale / 1.04), scale
+            else:
+                start_scale = end_scale = scale
+            pan_start = 0.04 if motion == "pan_left" else -0.04 if motion == "pan_right" else 0
+            pan_end = -pan_start
+            zoom = f"{start_scale:.4f}+({end_scale - start_scale:.4f})*{progress}"
+            focus = f"{focus_x:.5f}+({pan_start:.4f}+({pan_end - pan_start:.4f})*{progress})"
+            return (
+                f"scale={preset.width * 2}:{preset.height * 2}:"
+                "force_original_aspect_ratio=increase,"
+                f"crop={preset.width * 2}:{preset.height * 2},"
+                f"zoompan=z='{zoom}':"
+                f"x='max(0,min(iw-iw/zoom,iw*({focus})-iw/zoom/2))':"
+                f"y='max(0,min(ih-ih/zoom,ih*{focus_y:.5f}-ih/zoom/2))':"
+                f"d=1:s={preset.width}x{preset.height}:fps={preset.fps},"
+                f"format={preset.pixel_format}"
+            )
         return (
             f"crop=w='trunc(iw/{scale:.4f}/2)*2':h='trunc(ih/{scale:.4f}/2)*2':"
             f"x='max(0,min(iw-ow,iw*{focus_x:.5f}-ow/2))':"

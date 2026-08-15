@@ -3673,6 +3673,50 @@ button {
   overflow-x: auto;
 }
 
+.timelineToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 14px 14px 0;
+}
+
+.timelineToolbar > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.timelineToolbar span {
+  color: #64717a;
+  font-size: 12px;
+}
+
+.timelineZoomControls,
+.timelineClipActions,
+.timelineBoundaryControls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.timelineZoomControls button,
+.timelineClipActions button,
+.timelineBoundaryControls button {
+  min-height: 32px;
+  border: 1px solid #cbd5da;
+  border-radius: 5px;
+  padding: 5px 9px;
+  background: #fff;
+  color: #31424c;
+  cursor: pointer;
+}
+
+.timelineZoomControls button.selected {
+  border-color: #0f766e;
+  background: #dff2ef;
+  color: #174f4a;
+}
+
 .timelineLane {
   display: grid;
   grid-template-columns: 132px minmax(560px, 1fr);
@@ -3692,6 +3736,29 @@ button {
   border-right: 1px solid #cbd5da;
   background-image: linear-gradient(to right, #e8eef1 1px, transparent 1px);
   background-size: 10% 100%;
+}
+
+.timelineRuler {
+  position: relative;
+  height: 28px;
+  border-bottom: 1px solid #cbd5da;
+  color: #64717a;
+  font-size: 10px;
+}
+
+.timelineRuler span {
+  position: absolute;
+  bottom: 4px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.timelineRuler span:first-child {
+  transform: none;
+}
+
+.timelineRuler span:last-child {
+  transform: translateX(-100%);
 }
 
 .timelineLaneClip {
@@ -3720,7 +3787,7 @@ button {
 
 .timelineClipEditor {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) repeat(3, minmax(120px, 0.7fr)) auto;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 12px;
   align-items: end;
   margin: 10px 14px 0;
@@ -3730,8 +3797,38 @@ button {
   background: #f1faf8;
 }
 
-.timelineClipEditor > strong {
-  align-self: center;
+.timelineClipIdentity {
+  display: grid;
+  align-content: center;
+  gap: 4px;
+  min-width: 220px;
+}
+
+.timelineClipIdentity span,
+.timelineBrollPreview span {
+  color: #64717a;
+  font-size: 11px;
+}
+
+.timelineBrollPreview {
+  display: grid;
+  gap: 5px;
+  grid-column: span 2;
+}
+
+.timelineBrollPreview video {
+  width: 100%;
+  max-height: 180px;
+  border-radius: 5px;
+  background: #020617;
+}
+
+.timelineClipActions,
+.timelineBoundaryControls {
+  align-self: end;
+}
+
+.timelineClipIdentity > strong {
   overflow-wrap: anywhere;
 }
 

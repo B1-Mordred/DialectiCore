@@ -289,8 +289,7 @@ def test_seated_panel_timeline_cuts_to_composited_rear_screen_media(
     assert presentation["content_clip_id"] == content["id"]
     assert presentation["transition_duration_ms"] == 1_500
     assert all(
-        keyframe["transition_duration_ms"] == 1_500
-        for keyframe in presentation["keyframes"]
+        keyframe["transition_duration_ms"] == 1_500 for keyframe in presentation["keyframes"]
     )
     assert [keyframe["state"] for keyframe in presentation["keyframes"]] == [
         "rear_screen",
@@ -367,6 +366,38 @@ def test_parallel_track_transition_duration_is_normalized_and_bounded() -> None:
                 "broll_content": [
                     {"id": "duplicate", "start_ms": 0, "end_ms": 1_000},
                     {"id": "duplicate", "start_ms": 2_000, "end_ms": 3_000},
+                ]
+            }
+        )
+
+
+def test_virtual_camera_actions_and_broll_modes_are_validated() -> None:
+    service = TimelineService(Settings())
+
+    normalized = service._normalize_timeline_tracks(
+        {
+            "camera_direction": [
+                {"id": "camera-1", "start_ms": 0, "end_ms": 2_000, "action": "fly_in"}
+            ],
+            "broll_presentation": [
+                {
+                    "id": "presentation-1",
+                    "start_ms": 0,
+                    "end_ms": 2_000,
+                    "mode": "rear_screen",
+                }
+            ],
+        }
+    )
+
+    assert normalized["camera_direction"][0]["action"] == "fly_in"
+    assert normalized["broll_presentation"][0]["mode"] == "rear_screen"
+
+    with pytest.raises(ValueError, match="unsupported camera action"):
+        service._normalize_timeline_tracks(
+            {
+                "camera_direction": [
+                    {"id": "camera-1", "start_ms": 0, "end_ms": 2_000, "action": "orbit"}
                 ]
             }
         )

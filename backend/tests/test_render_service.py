@@ -370,7 +370,7 @@ def test_seated_panel_virtual_camera_uses_normalized_speaker_region() -> None:
     )
 
     assert camera == {
-        "schema_version": "dialecticore.virtual_camera.v2",
+        "schema_version": "dialecticore.virtual_camera.v3",
         "view": "speaker_close_up",
         "scale": 1.9968,
         "focus_x": 0.49,
@@ -378,6 +378,7 @@ def test_seated_panel_virtual_camera_uses_normalized_speaker_region() -> None:
         "focus_source": "active_speaker_face_region_or_seating_plan",
         "speaker_participant_id": "host",
         "context_participant_ids": [],
+        "motion": "slow_push",
         "framing_policy": {
             "speaker_target_frame_x": 0.5,
             "speaker_allowed_frame_x": [0.45, 0.55],
@@ -388,7 +389,7 @@ def test_seated_panel_virtual_camera_uses_normalized_speaker_region() -> None:
     }
     assert "crop=w='trunc(iw/1.9968/2)*2'" in service._seated_panel_virtual_camera_filter(
         preset,
-        camera,
+        {**camera, "motion": None},
     )
     layout_policy = composition["segment_layers"][0]["layout_policy"]
     assert layout_policy["name"] == "seated_panel_virtual_camera"
@@ -452,6 +453,33 @@ def test_seated_panel_virtual_camera_centers_speaker_not_pair_midpoint() -> None
     assert camera["focus_x"] != 0.44
     assert camera["speaker_participant_id"] == "speaker"
     assert camera["context_participant_ids"] == ["neighbor"]
+
+
+def test_establishing_wide_fly_in_uses_animated_virtual_camera() -> None:
+    service = RenderService(Settings())
+    preset = next(item for item in default_render_presets() if item.id == "preview-low-bitrate")
+    camera = service._seated_panel_virtual_camera(
+        segment={
+            "speaker_id": "host",
+            "direction": {
+                "view": "establishing_wide",
+                "action": "fly_in",
+                "speaker_mouth_mode": "audio_driven_seated_panel",
+            },
+        },
+        asset_by_id={},
+    )
+
+    assert camera is not None
+    assert camera["view"] == "establishing_wide"
+    assert camera["motion"] == "fly_in"
+    rendered = service._seated_panel_virtual_camera_filter(
+        preset,
+        camera,
+        duration_seconds=5.0,
+    )
+    assert "zoompan=" in rendered
+    assert "on/" in rendered
 
 
 def test_parallel_broll_render_view_preserves_dialogue_and_source_clock() -> None:

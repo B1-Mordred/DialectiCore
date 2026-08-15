@@ -406,8 +406,26 @@ class MediaDirectingDefinition(BaseModel):
             "contextual_broll",
         ]
     )
-    allowed_camera_actions: list[Literal["cut", "dissolve", "slow_push", "slow_pull"]] = (
-        Field(default_factory=lambda: ["cut", "dissolve", "slow_push", "slow_pull"])
+    allowed_camera_actions: list[
+        Literal[
+            "cut",
+            "dissolve",
+            "slow_push",
+            "slow_pull",
+            "fly_in",
+            "pan_left",
+            "pan_right",
+        ]
+    ] = Field(
+        default_factory=lambda: [
+            "cut",
+            "dissolve",
+            "slow_push",
+            "slow_pull",
+            "fly_in",
+            "pan_left",
+            "pan_right",
+        ]
     )
 
     @model_validator(mode="after")
@@ -1386,9 +1404,7 @@ class PrimerNarratorProfile(BaseModel):
         max_length=2000,
     )
     sampling_settings: SamplingSettings = Field(default_factory=SamplingSettings)
-    pronunciation: PrimerPronunciationSettings = Field(
-        default_factory=PrimerPronunciationSettings
-    )
+    pronunciation: PrimerPronunciationSettings = Field(default_factory=PrimerPronunciationSettings)
     enabled: bool = True
 
 

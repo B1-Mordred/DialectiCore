@@ -822,6 +822,8 @@ type TimelineTrackClip = {
   action?: string;
   keyframes?: Array<Record<string, unknown>>;
   transition_duration_ms?: number;
+  state?: string;
+  mode?: string;
   [key: string]: unknown;
 };
 
@@ -23355,6 +23357,9 @@ function TimelineEditorPanel(props: {
     trackName: string;
     clipId: string;
   } | null>(null);
+  const [timelineZoom, setTimelineZoom] = React.useState(1);
+  const brollPreviewRef = React.useRef<HTMLVideoElement>(null);
+  const [brollPreviewPositionMs, setBrollPreviewPositionMs] = React.useState(0);
   const timelineKey = `${props.episode?.id ?? "none"}:${activeTimeline?.id ?? "none"}:${
     activeTimeline?.edit_version ?? 0
   }`;
@@ -23364,6 +23369,7 @@ function TimelineEditorPanel(props: {
       setDraft(null);
       setSelectedSegmentId(null);
       setSelectedTrackClip(null);
+      setTimelineZoom(1);
       return;
     }
     const next = cloneTimeline(activeTimeline);
@@ -23428,6 +23434,15 @@ function TimelineEditorPanel(props: {
         action,
       },
     });
+    const cameraClip = timelineTrackClips(draft, "camera_direction").find(
+      (clip) =>
+        clip.linked_segment_id === segment.id ||
+        clip.id === segment.id ||
+        clip.id === `camera-${segment.id}`,
+    );
+    if (cameraClip) {
+      updateTrackClip("camera_direction", cameraClip.id, { view, action });
+    }
   };
   const updateTrackClip = (
     trackName: string,
@@ -23451,12 +23466,83 @@ function TimelineEditorPanel(props: {
           duration_ms: Math.max(0, endMs - startMs),
         };
       });
+      const nextSegments =
+        trackName === "camera_direction" && current.segments
+          ? current.segments.map((segment) => {
+              const sourceClip = clips.find((clip) => clip.id === clipId);
+              if (
+                !sourceClip ||
+                !(
+                  sourceClip.linked_segment_id === segment.id ||
+                  sourceClip.id === segment.id ||
+                  sourceClip.id === `camera-${segment.id}`
+                )
+              ) {
+                return segment;
+              }
+              const view = String(patch.view ?? sourceClip.view ?? "speaker_medium");
+              const action = String(patch.action ?? sourceClip.action ?? "cut");
+              return {
+                ...segment,
+                camera_view: view,
+                camera_action: action,
+                camera_transition: action,
+                direction: {
+                  ...segment.direction,
+                  schema_version: "dialecticore.scene_direction.v1",
+                  view,
+                  action,
+                },
+              };
+            })
+          : current.segments;
       return {
         ...current,
         tracks: { ...current.tracks, [trackName]: nextClips },
+        segments: nextSegments,
       };
     });
   };
+  const shiftTrackClip = (trackName: string, clipId: string, deltaMs: number) => {
+    const clip = timelineTrackClips(draft, trackName).find((item) => item.id === clipId);
+    if (!clip) return;
+    const appliedDelta = Math.min(
+      Math.max(deltaMs, -Number(clip.start_ms)),
+      Math.max(0, Number(draft?.duration_ms ?? 0) - Number(clip.end_ms)),
+    );
+    updateTrackClip(trackName, clipId, {
+      start_ms: Number(clip.start_ms) + appliedDelta,
+      end_ms: Number(clip.end_ms) + appliedDelta,
+    });
+  };
+  const setBrollBoundaryFromPreview = (boundary: "in" | "out") => {
+    const currentTime = brollPreviewRef.current?.currentTime;
+    if (
+      !selectedTrackClip ||
+      !selectedClip ||
+      typeof currentTime !== "number" ||
+      !Number.isFinite(currentTime)
+    ) {
+      return;
+    }
+    const positionMs = Math.max(0, Math.round(currentTime * 1000));
+    setBrollPreviewPositionMs(positionMs);
+    updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
+      ...(boundary === "in"
+        ? { source_in_ms: positionMs }
+        : { source_out_ms: positionMs }),
+    });
+  };
+  const selectedBrollAsset =
+    selectedTrackClip?.trackName === "broll_content" && selectedClip?.asset_id
+      ? props.episode?.assets.find((asset) => asset.id === selectedClip.asset_id) ?? null
+      : null;
+  const selectedBrollUrl = selectedBrollAsset
+    ? episodeAssetDownloadUrlById(props.episode?.id, selectedBrollAsset.id)
+    : null;
+  const directingClips = DIRECTING_TRACK_LANES.flatMap(([trackName]) =>
+    timelineTrackClips(draft, trackName),
+  );
   const validDraft = Boolean(
     draft?.transcript_version_id &&
     segments.length > 0 &&
@@ -23465,7 +23551,15 @@ function TimelineEditorPanel(props: {
         Number.isFinite(Number(segment.start_ms)) &&
         Number.isFinite(Number(segment.end_ms)) &&
         Number(segment.end_ms) > Number(segment.start_ms),
-    ),
+    ) &&
+      directingClips.every(
+        (clip) =>
+          Number(clip.start_ms) >= 0 &&
+          Number(clip.end_ms) > Number(clip.start_ms) &&
+          Number(clip.end_ms) <= Number(draft.duration_ms ?? 0) &&
+          (clip.source_out_ms == null ||
+            Number(clip.source_out_ms) > Number(clip.source_in_ms ?? 0)),
+      ),
   );
 
   return (
@@ -23478,14 +23572,49 @@ function TimelineEditorPanel(props: {
         <div className="emptyState">No editable timeline asset.</div>
       ) : (
         <>
+          <div className="timelineToolbar">
+            <div>
+              <strong>Directing tracks</strong>
+              <span>Click a clip to trim it, shift it, or inspect its source.</span>
+            </div>
+            <div className="timelineZoomControls" aria-label="Timeline zoom">
+              {[1, 2, 4].map((zoom) => (
+                <button
+                  aria-pressed={timelineZoom === zoom}
+                  className={timelineZoom === zoom ? "selected" : ""}
+                  key={zoom}
+                  onClick={() => setTimelineZoom(zoom)}
+                  type="button"
+                >
+                  {zoom}x
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="timelineLanes" aria-label="Parallel directing timeline">
+            <div className="timelineLane timelineRulerLane" aria-hidden="true">
+              <strong>Time</strong>
+              <div
+                className="timelineRuler"
+                style={{ minWidth: `${Math.max(560, 560 * timelineZoom)}px` }}
+              >
+                {[0, 0.25, 0.5, 0.75, 1].map((position) => (
+                  <span key={position} style={{ left: `${position * 100}%` }}>
+                    {formatPrimerTimestamp(Number(draft.duration_ms ?? 0) * position)}
+                  </span>
+                ))}
+              </div>
+            </div>
             {DIRECTING_TRACK_LANES.map(([trackName, label]) => {
               const clips = timelineTrackClips(draft, trackName);
               const durationMs = Math.max(1, Number(draft.duration_ms ?? 0));
               return (
                 <div className="timelineLane" key={trackName}>
                   <strong>{label}</strong>
-                  <div className="timelineLaneRail">
+                  <div
+                    className="timelineLaneRail"
+                    style={{ minWidth: `${Math.max(560, 560 * timelineZoom)}px` }}
+                  >
                     {clips.map((clip) => {
                       const left = Math.max(0, (Number(clip.start_ms) / durationMs) * 100);
                       const width = Math.max(
@@ -23523,9 +23652,41 @@ function TimelineEditorPanel(props: {
           </div>
           {selectedTrackClip && selectedClip ? (
             <div className="timelineClipEditor">
-              <strong>
-                {selectedTrackClip.trackName} · {selectedClip.id}
-              </strong>
+              <div className="timelineClipIdentity">
+                <strong>
+                  {selectedTrackClip.trackName} · {selectedClip.id}
+                </strong>
+                <span>
+                  {formatPrimerTimestamp(selectedClip.start_ms)}–
+                  {formatPrimerTimestamp(selectedClip.end_ms)} · source {" "}
+                  {formatPrimerTimestamp(Number(selectedClip.source_in_ms ?? 0))}–
+                  {formatPrimerTimestamp(Number(selectedClip.source_out_ms ?? 0))}
+                </span>
+              </div>
+              {selectedBrollUrl &&
+              (selectedBrollAsset?.asset_type === "video" ||
+                selectedBrollAsset?.asset_type === "broll" ||
+                selectedBrollAsset?.mime_type?.startsWith("video/")) ? (
+                <div className="timelineBrollPreview">
+                  <video
+                    controls
+                    onSeeked={() =>
+                      setBrollPreviewPositionMs(
+                        Math.max(
+                          0,
+                          Math.round((brollPreviewRef.current?.currentTime ?? 0) * 1000),
+                        ),
+                      )
+                    }
+                    preload="metadata"
+                    ref={brollPreviewRef}
+                    src={selectedBrollUrl}
+                  >
+                    Your browser cannot preview this B-roll clip.
+                  </video>
+                  <span>Preview frame {formatPrimerFrameTimestamp(brollPreviewPositionMs)}</span>
+                </div>
+              ) : null}
               <label className="field">
                 <span>Clip start ms</span>
                 <input
@@ -23565,25 +23726,145 @@ function TimelineEditorPanel(props: {
                   value={Number(selectedClip.source_in_ms ?? 0)}
                 />
               </label>
-              {selectedTrackClip.trackName === "broll_presentation" ? (
-                <label className="field">
-                  <span>Transition duration ms</span>
-                  <input
-                    max={5000}
-                    min={0}
-                    onChange={(event) =>
-                      updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
-                        transition_duration_ms: Number(event.target.value),
-                      })
-                    }
-                    type="number"
-                    value={Number(selectedClip.transition_duration_ms ?? 1500)}
-                  />
-                </label>
+              {selectedTrackClip.trackName === "broll_content" ? (
+                <>
+                  <label className="field">
+                    <span>Source out ms</span>
+                    <input
+                      min={1}
+                      onChange={(event) =>
+                        updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
+                          source_out_ms: Number(event.target.value),
+                        })
+                      }
+                      type="number"
+                      value={Number(selectedClip.source_out_ms ?? 0)}
+                    />
+                  </label>
+                  {selectedBrollUrl ? (
+                    <div className="timelineBoundaryControls">
+                      <button
+                        onClick={() => setBrollBoundaryFromPreview("in")}
+                        type="button"
+                      >
+                        <ChevronsLeft size={15} /> Set in
+                      </button>
+                      <button
+                        onClick={() => setBrollBoundaryFromPreview("out")}
+                        type="button"
+                      >
+                        Set out <ChevronsRight size={15} />
+                      </button>
+                    </div>
+                  ) : null}
+                </>
               ) : null}
-              <button className="secondaryButton" onClick={() => setSelectedTrackClip(null)}>
-                Close clip editor
-              </button>
+              {selectedTrackClip.trackName === "camera_direction" ? (
+                <>
+                  <label className="field">
+                    <span>Camera view</span>
+                    <select
+                      onChange={(event) =>
+                        updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
+                          view: event.target.value,
+                        })
+                      }
+                      value={String(selectedClip.view ?? "speaker_medium")}
+                    >
+                      <option value="establishing_wide">Establishing wide</option>
+                      <option value="speaker_medium">Speaker medium</option>
+                      <option value="speaker_close_up">Speaker close-up</option>
+                      <option value="panel_two_shot">Panel two-shot</option>
+                      <option value="reaction">Reaction</option>
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Camera move</span>
+                    <select
+                      onChange={(event) =>
+                        updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
+                          action: event.target.value,
+                        })
+                      }
+                      value={String(selectedClip.action ?? "cut")}
+                    >
+                      <option value="cut">Cut</option>
+                      <option value="dissolve">Dissolve</option>
+                      <option value="slow_push">Slow push</option>
+                      <option value="slow_pull">Slow pull</option>
+                      <option value="fly_in">Fly in</option>
+                      <option value="pan_left">Pan left</option>
+                      <option value="pan_right">Pan right</option>
+                    </select>
+                  </label>
+                </>
+              ) : null}
+              {selectedTrackClip.trackName === "broll_presentation" ? (
+                <>
+                  <label className="field">
+                    <span>Presentation</span>
+                    <select
+                      onChange={(event) => {
+                        const state = event.target.value;
+                        updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
+                          mode: state,
+                          keyframes: Array.isArray(selectedClip.keyframes)
+                            ? selectedClip.keyframes.map((keyframe) => ({
+                                ...keyframe,
+                                state,
+                              }))
+                            : selectedClip.keyframes,
+                        });
+                      }}
+                      value={String(
+                        selectedClip.mode ??
+                          (Array.isArray(selectedClip.keyframes)
+                            ? selectedClip.keyframes[0]?.state
+                            : "rear_screen") ??
+                          "rear_screen",
+                      )}
+                    >
+                      <option value="rear_screen">Rear studio screen</option>
+                      <option value="fullscreen">Full screen</option>
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Transition duration ms</span>
+                    <input
+                      max={5000}
+                      min={0}
+                      onChange={(event) =>
+                        updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
+                          transition_duration_ms: Number(event.target.value),
+                        })
+                      }
+                      type="number"
+                      value={Number(selectedClip.transition_duration_ms ?? 1500)}
+                    />
+                  </label>
+                </>
+              ) : null}
+              <div className="timelineClipActions">
+                <button
+                  onClick={() =>
+                    shiftTrackClip(selectedTrackClip.trackName, selectedClip.id, -1000)
+                  }
+                  type="button"
+                >
+                  −1s
+                </button>
+                <button
+                  onClick={() =>
+                    shiftTrackClip(selectedTrackClip.trackName, selectedClip.id, 1000)
+                  }
+                  type="button"
+                >
+                  +1s
+                </button>
+                <button className="secondaryButton" onClick={() => setSelectedTrackClip(null)}>
+                  Close
+                </button>
+              </div>
             </div>
           ) : null}
           <div className="timelineEditor">
@@ -23683,6 +23964,9 @@ function TimelineEditorPanel(props: {
                       <option value="dissolve">Dissolve</option>
                       <option value="slow_push">Slow push</option>
                       <option value="slow_pull">Slow pull</option>
+                      <option value="fly_in">Fly in</option>
+                      <option value="pan_left">Pan left</option>
+                      <option value="pan_right">Pan right</option>
                     </select>
                   </label>
                 </div>
@@ -23759,7 +24043,15 @@ function defaultMediaDirectingSettings(): MediaDirectingSettings {
       "reaction",
       "contextual_broll",
     ],
-    allowed_camera_actions: ["cut", "dissolve", "slow_push", "slow_pull"],
+    allowed_camera_actions: [
+      "cut",
+      "dissolve",
+      "slow_push",
+      "slow_pull",
+      "fly_in",
+      "pan_left",
+      "pan_right",
+    ],
   };
 }
 

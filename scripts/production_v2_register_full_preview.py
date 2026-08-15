@@ -9,7 +9,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
@@ -95,11 +95,18 @@ def _remap_timeline(
     for clip in tracks["dialogue"]:
         clip["turn_id"] = turn_ids[clip["turn_id"]]
         clip["audio_asset_id"] = audio_ids[clip["audio_asset_id"]]
+        clip["asset_id"] = clip["audio_asset_id"]
     for clip in tracks["character_performance"]:
         source_turn_id = clip["id"].removeprefix("turn-")
         clip["speaking_asset_id"] = speaking_ids[source_turn_id]
+        clip["asset_id"] = clip["speaking_asset_id"]
+    dialogue_by_id = {clip["id"]: clip for clip in tracks["dialogue"]}
+    character_by_id = {clip["id"]: clip for clip in tracks["character_performance"]}
     for segment in timeline["segments"]:
         segment["transcript_turn_id"] = turn_ids[segment["transcript_turn_id"]]
+        segment["source_turn_id"] = segment["transcript_turn_id"]
+        segment["audio_asset_id"] = dialogue_by_id[segment["id"]]["asset_id"]
+        segment["video_asset_id"] = character_by_id[segment["id"]]["asset_id"]
     return timeline
 
 
@@ -145,7 +152,23 @@ def main() -> int:
                 ),
                 None,
             )
-            if prior is not None and prior.checksum == preview_checksum:
+            prior_manifest = (
+                prior.generation_metadata.get("render_manifest")
+                if prior is not None
+                and isinstance(prior.generation_metadata.get("render_manifest"), dict)
+                else {}
+            )
+            prior_timeline = (
+                prior_manifest.get("timeline")
+                if isinstance(prior_manifest.get("timeline"), dict)
+                else {}
+            )
+            if (
+                prior is not None
+                and prior.checksum == preview_checksum
+                and prior_timeline.get("sha256")
+                == render_manifest.get("timeline", {}).get("sha256")
+            ):
                 print(
                     json.dumps(
                         {
@@ -332,6 +355,60 @@ def main() -> int:
         audio_ids=audio_ids,
         speaking_ids=speaking_ids,
     )
+    timeline.update(
+        {
+            "id": str(uuid4()),
+            "episode_id": str(episode.id),
+            "transcript_version_id": str(transcript.id),
+            "language": transcript.language,
+            "editable": True,
+            "edit_version": revision,
+        }
+    )
+    existing_broll_by_source_id = {
+        str(asset.generation_metadata.get("source_asset_id")): asset
+        for asset in episode.assets
+        if asset.asset_type == AssetType.broll
+        and asset.status == "completed"
+        and asset.generation_metadata.get("source_asset_id")
+    }
+    source_broll_by_name = {
+        Path(asset.storage_uri or "").name: asset
+        for asset in source.assets
+        if asset.status == "completed"
+        and asset.asset_type in {AssetType.video, AssetType.broll}
+        and asset.storage_uri
+    }
+    for clip in timeline.get("tracks", {}).get("broll_content", []):
+        source_path = str(clip.get("source_path") or "")
+        source_broll = source_broll_by_name.get(Path(source_path).name)
+        if source_broll is None:
+            continue
+        broll_asset = existing_broll_by_source_id.get(str(source_broll.id))
+        if broll_asset is None:
+            broll_asset = Asset(
+                episode_id=episode.id,
+                asset_type=AssetType.broll,
+                source_entity_type="production_v2_broll_source",
+                source_entity_id=str(source.id),
+                storage_uri=source_broll.storage_uri,
+                mime_type=source_broll.mime_type,
+                duration_ms=source_broll.duration_ms,
+                width=source_broll.width,
+                height=source_broll.height,
+                fps=source_broll.fps,
+                checksum=source_broll.checksum,
+                status="completed",
+                generation_metadata={
+                    **source_broll.generation_metadata,
+                    "source_episode_id": str(source.id),
+                    "source_asset_id": str(source_broll.id),
+                    "shared_immutable_broll": True,
+                },
+            )
+            episode.assets.append(broll_asset)
+            existing_broll_by_source_id[str(source_broll.id)] = broll_asset
+        clip["asset_id"] = str(broll_asset.id)
     timeline["duration_ms"] = int(preview_probe["duration_ms"])
     timeline_payload = json.dumps(timeline, indent=2, sort_keys=True).encode()
     revision_prefix = f"revision-{revision}/" if revision > 1 else ""

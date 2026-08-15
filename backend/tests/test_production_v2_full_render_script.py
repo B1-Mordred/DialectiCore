@@ -36,6 +36,10 @@ def test_presentation_plan_keeps_opening_and_close_wide_in_the_studio() -> None:
     assert module._camera_mode(1) == "establishing_wide"
     assert module._camera_mode(21) == "establishing_wide"
     assert module._camera_mode(2) == "speaker_centered"
+    assert module._camera_action(1) == "fly_in"
+    assert module._camera_action(21) == "slow_pull"
+    assert module._camera_action(2) == "cut"
+    assert "zoompan" in module._wide_camera_filter("fly_in", 5_000)
     assert module._presentation_mode(9) == "enter"
     assert module._presentation_mode(10) == "exit"
     assert module._presentation_mode(14) == "roundtrip"
@@ -48,6 +52,7 @@ def test_full_production_seats_keep_outer_torsos_over_the_desk() -> None:
 
     chatgpt = module._full_character_layout("chatgpt", wide=False)
     mistral = module._full_character_layout("mistral", wide=False)
+    claude = module._full_character_layout("claude", wide=False)
     wide_chatgpt = module._full_character_layout("chatgpt", wide=True)
 
     # Measured scaled alpha half-widths are 120px for ChatGPT and 107px for
@@ -57,6 +62,14 @@ def test_full_production_seats_keep_outer_torsos_over_the_desk() -> None:
     assert chatgpt["left"] < mistral["left"]
     assert wide_chatgpt["canvas_size"] < chatgpt["canvas_size"]
     assert wide_chatgpt["target_alpha_bottom"] == chatgpt["target_alpha_bottom"]
+    assert (
+        chatgpt["target_alpha_bottom"] - claude["target_alpha_bottom"]
+        == module.EDGE_DESK_CONTACT_EXTRA
+    )
+    assert (
+        mistral["target_alpha_bottom"] - claude["target_alpha_bottom"]
+        == module.EDGE_DESK_CONTACT_EXTRA
+    )
 
 
 def test_timeline_keeps_broll_parallel_to_unbroken_dialogue() -> None:
@@ -83,6 +96,8 @@ def test_timeline_keeps_broll_parallel_to_unbroken_dialogue() -> None:
     assert dialogue[0]["start_ms"] == 63_927
     assert dialogue[0]["end_ms"] == dialogue[1]["start_ms"]
     assert timeline["tracks"]["broll_content"][0]["start_ms"] == 63_927
+    assert timeline["tracks"]["broll_content"][0]["end_ms"] == timeline["duration_ms"]
+    assert timeline["tracks"]["broll_content"][0]["source_out_ms"] == 55_260
     assert timeline["tracks"]["captions"][0]["offset_ms"] == 63_927
 
 

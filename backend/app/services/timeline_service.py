@@ -246,6 +246,22 @@ class TimelineService:
                         raise ValueError(
                             f"timeline track {track_name} transition duration must be 0-5000ms"
                         )
+                if track_name == "camera_direction":
+                    action = str(raw_clip.get("action") or "cut")
+                    if action not in {
+                        "cut",
+                        "dissolve",
+                        "slow_push",
+                        "slow_pull",
+                        "fly_in",
+                        "pan_left",
+                        "pan_right",
+                    }:
+                        raise ValueError(f"unsupported camera action: {action}")
+                if track_name == "broll_presentation":
+                    mode = raw_clip.get("mode")
+                    if mode is not None and mode not in {"rear_screen", "fullscreen"}:
+                        raise ValueError(f"unsupported B-roll presentation mode: {mode}")
                 clips.append(
                     {
                         **raw_clip,

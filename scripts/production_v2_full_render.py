@@ -36,14 +36,9 @@ SOURCE_EPISODE_ID = "cc1ad449-9cad-4a40-a150-652db0b7dc7a"
 PRIMER_ASSET_ID = "9e052a27-301c-4bb5-a0d3-d5eec44f1238"
 SUBTITLE_ASSET_ID = "7460ebb8-56df-4d13-8ca7-1e333f77fc4c"
 OUTPUT_ROOT = ROOT / "output/production-v2/full-production/render"
-ANIMATION_MANIFEST = (
-    ROOT / "output/production-v2/full-production/animation/manifest.json"
-)
+ANIMATION_MANIFEST = ROOT / "output/production-v2/full-production/animation/manifest.json"
 BROLL_ROOT = (
-    ROOT
-    / "storage/object-store/dialecticore/episodes"
-    / SOURCE_EPISODE_ID
-    / "opening-media"
+    ROOT / "storage/object-store/dialecticore/episodes" / SOURCE_EPISODE_ID / "opening-media"
 )
 BROLL_FILES = (
     "4be330caeefbaaea.mp4",
@@ -59,6 +54,7 @@ PRESENTATION_TRANSITION_SECONDS = 2.0
 FPS = 24
 FULL_SEAT_CENTERS_X = (440, 597, 754, 911, 1068, 1225)
 WIDE_CHARACTER_SCALE = 0.82
+EDGE_DESK_CONTACT_EXTRA = 18
 
 
 def _run(command: list[str]) -> None:
@@ -74,9 +70,7 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _segment_fingerprint(
-    record: dict[str, Any], *, studio: Path, reel: Path
-) -> str:
+def _segment_fingerprint(record: dict[str, Any], *, studio: Path, reel: Path) -> str:
     payload = {
         "render_policy": "production_v2_full_turn.v2",
         "participant_id": record["participant_id"],
@@ -87,22 +81,20 @@ def _segment_fingerprint(
         "reel_sha256": _sha256(reel),
         "presentation_mode": _presentation_mode(int(record["index"])),
         "camera_mode": _camera_mode(int(record["index"])),
+        "camera_action": _camera_action(int(record["index"])),
         "seat_centers_x": FULL_SEAT_CENTERS_X,
         "wide_character_scale": WIDE_CHARACTER_SCALE,
+        "edge_desk_contact_extra": EDGE_DESK_CONTACT_EXTRA,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _segment_is_current(
-    record: dict[str, Any], *, studio: Path, reel: Path, output: Path
-) -> bool:
+def _segment_is_current(record: dict[str, Any], *, studio: Path, reel: Path, output: Path) -> bool:
     sidecar = output.with_suffix(".fingerprint")
     if not output.is_file() or not sidecar.is_file():
         return False
-    return sidecar.read_text().strip() == _segment_fingerprint(
-        record, studio=studio, reel=reel
-    )
+    return sidecar.read_text().strip() == _segment_fingerprint(record, studio=studio, reel=reel)
 
 
 def _object_path(uri: str) -> Path:
@@ -149,9 +141,7 @@ def _probe(path: Path) -> dict[str, Any]:
 def _broll_clip_records(sources: list[Path]) -> list[dict[str, Any]]:
     clips: list[dict[str, Any]] = []
     step = BROLL_CLIP_SECONDS - BROLL_CROSSFADE_SECONDS
-    for index, (source_in, source) in enumerate(
-        zip(BROLL_SOURCE_IN_SECONDS, sources, strict=True)
-    ):
+    for index, (source_in, source) in enumerate(zip(BROLL_SOURCE_IN_SECONDS, sources, strict=True)):
         clips.append(
             {
                 "index": index + 1,
@@ -189,9 +179,7 @@ def _build_broll_reel(output: Path) -> list[dict[str, Any]]:
         return clips
     command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
     for source_in, source in zip(BROLL_SOURCE_IN_SECONDS, sources, strict=True):
-        command.extend(
-            ["-ss", str(source_in), "-t", str(BROLL_CLIP_SECONDS), "-i", str(source)]
-        )
+        command.extend(["-ss", str(source_in), "-t", str(BROLL_CLIP_SECONDS), "-i", str(source)])
     filters: list[str] = []
     for index in range(len(sources)):
         filters.append(
@@ -249,6 +237,25 @@ def _camera_mode(turn_index: int) -> str:
     return "establishing_wide" if turn_index in {1, 21} else "speaker_centered"
 
 
+def _camera_action(turn_index: int) -> str:
+    return {1: "fly_in", 21: "slow_pull"}.get(turn_index, "cut")
+
+
+def _wide_camera_filter(action: str, duration_ms: int) -> str:
+    frame_count = max(1, round(duration_ms * FPS / 1000))
+    progress = f"on/{max(1, frame_count - 1)}"
+    if action == "fly_in":
+        zoom = f"1.0+0.08*{progress}"
+    elif action == "slow_pull":
+        zoom = f"1.08-0.08*{progress}"
+    else:
+        zoom = "1.0"
+    return (
+        f"zoompan=z='{zoom}':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':"
+        f"d=1:s=1280x720:fps={FPS},setsar=1,setpts=N/({FPS}*TB)"
+    )
+
+
 def _full_character_layout(participant_id: str, *, wide: bool) -> dict[str, int]:
     layout = _qualification_character_layout(participant_id)
     original_size = layout["canvas_size"]
@@ -257,11 +264,14 @@ def _full_character_layout(participant_id: str, *, wide: bool) -> dict[str, int]
         (layout["target_alpha_bottom"] - layout["top"]) * size / original_size
     )
     center_x = FULL_SEAT_CENTERS_X[PARTICIPANTS.index(participant_id)]
+    target_alpha_bottom = layout["target_alpha_bottom"] + (
+        EDGE_DESK_CONTACT_EXTRA if participant_id in {PARTICIPANTS[0], PARTICIPANTS[-1]} else 0
+    )
     return {
         "canvas_size": size,
         "left": center_x - size // 2,
-        "top": layout["target_alpha_bottom"] - scaled_alpha_height,
-        "target_alpha_bottom": layout["target_alpha_bottom"],
+        "top": target_alpha_bottom - scaled_alpha_height,
+        "target_alpha_bottom": target_alpha_bottom,
     }
 
 
@@ -374,10 +384,8 @@ def _render_turn(
         ]
     )
     if wide:
-        filters.append(
-            "[studio_people]scale=1280:720:flags=lanczos,setsar=1,"
-            f"setpts=N/({FPS}*TB)[studio_camera]"
-        )
+        camera_filter = _wide_camera_filter(_camera_action(int(record["index"])), duration_ms)
+        filters.append(f"[studio_people]{camera_filter}[studio_camera]")
     else:
         filters.extend(
             [
@@ -400,8 +408,7 @@ def _render_turn(
     mode = _presentation_mode(int(record["index"]))
     blend = _presentation_blend(mode, duration_ms)
     filters.append(
-        f"[studio_camera][fullscreen]blend=all_expr='{blend}',"
-        f"fps={FPS},format=yuv420p[vout]"
+        f"[studio_camera][fullscreen]blend=all_expr='{blend}',fps={FPS},format=yuv420p[vout]"
     )
     command.extend(
         [
@@ -435,13 +442,9 @@ def _render_turn(
     _run(command)
 
 
-def _concat_files(
-    paths: list[Path], output: Path, *, copy: bool, duration_ms: int
-) -> None:
+def _concat_files(paths: list[Path], output: Path, *, copy: bool, duration_ms: int) -> None:
     concat = output.with_suffix(".concat.txt")
-    concat.write_text(
-        "".join(f"file '{path.resolve().as_posix()}'\n" for path in paths)
-    )
+    concat.write_text("".join(f"file '{path.resolve().as_posix()}'\n" for path in paths))
     command = [
         "ffmpeg",
         "-hide_banner",
@@ -474,9 +477,7 @@ def _concat_files(
                 "48000",
             ]
         )
-    command.extend(
-        ["-t", f"{duration_ms / 1000:.3f}", "-movflags", "+faststart", str(output)]
-    )
+    command.extend(["-t", f"{duration_ms / 1000:.3f}", "-movflags", "+faststart", str(output)])
     _run(command)
 
 
@@ -545,16 +546,16 @@ def _timeline(
             }
         )
         camera_mode = _camera_mode(int(record["index"]))
+        camera_action = _camera_action(int(record["index"]))
         camera = {
             **base,
             "participant_id": record["participant_id"],
             "framing": camera_mode,
+            "action": camera_action,
             "speaker_center_percent": 50 if camera_mode == "speaker_centered" else None,
             "crop": (
                 {
-                    "x": FULL_SEAT_CENTERS_X[
-                        PARTICIPANTS.index(record["participant_id"])
-                    ],
+                    "x": FULL_SEAT_CENTERS_X[PARTICIPANTS.index(record["participant_id"])],
                     "y": CAMERA_TOP,
                     "width": CAMERA_WIDTH,
                     "height": CAMERA_HEIGHT,
@@ -578,21 +579,40 @@ def _timeline(
             {
                 "id": clip_id,
                 "start_ms": start_ms,
+                "end_ms": end_ms,
                 "duration_ms": int(record["duration_ms"]),
+                "speaker_id": record["participant_id"],
                 "speaker_participant_id": record["participant_id"],
                 "transcript_turn_id": record["turn_id"],
+                "source_turn_id": record["turn_id"],
+                "audio_asset_id": record["audio_asset_id"],
+                "camera_view": camera_mode,
+                "camera_action": camera_action,
+                "camera_transition": camera_action,
+                "direction": {
+                    "schema_version": "dialecticore.scene_direction.v1",
+                    "view": camera_mode,
+                    "action": camera_action,
+                },
                 "camera": tracks["camera_direction"][-1],
             }
         )
         discussion_offset += int(record["duration_ms"])
     for clip in broll_clips:
+        clip_start_ms = primer_duration_ms + clip["timeline_start_ms"]
+        clip_end_ms = min(
+            primer_duration_ms + clip["timeline_end_ms"],
+            primer_duration_ms + discussion_offset,
+        )
+        if clip_end_ms <= clip_start_ms:
+            continue
         tracks["broll_content"].append(
             {
                 "id": f"broll-{clip['index']:02d}",
-                "start_ms": primer_duration_ms + clip["timeline_start_ms"],
-                "end_ms": primer_duration_ms + clip["timeline_end_ms"],
+                "start_ms": clip_start_ms,
+                "end_ms": clip_end_ms,
                 "source_in_ms": clip["source_in_ms"],
-                "source_out_ms": clip["source_in_ms"] + round(BROLL_CLIP_SECONDS * 1000),
+                "source_out_ms": clip["source_in_ms"] + clip_end_ms - clip_start_ms,
                 "source_path": clip["path"],
                 "source_sha256": clip["sha256"],
                 "crossfade_ms": clip["crossfade_ms"],
@@ -623,7 +643,9 @@ def _timeline(
             "speaker_center_percent_range": [45, 55],
             "desk_foreground_occlusion_y": DESK_TOP,
             "seat_centers_x": list(FULL_SEAT_CENTERS_X),
+            "edge_desk_contact_extra": EDGE_DESK_CONTACT_EXTRA,
             "establishing_wide_turns": [1, 21],
+            "establishing_wide_actions": {"1": "fly_in", "21": "slow_pull"},
         },
     }
 
