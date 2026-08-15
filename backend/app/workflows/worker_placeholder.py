@@ -707,10 +707,6 @@ async def run_comfyui_adapter_once(
         if scanned_count >= batch_limit:
             break
         scanned_count += 1
-        if _workflow_control_blocks_stage_work(episode):
-            workflow_blocked_count += 1
-            skipped_count += 1
-            continue
         pending_languages = sorted(
             {
                 asset.language
@@ -721,6 +717,8 @@ async def run_comfyui_adapter_once(
                     AssetType.broll,
                     AssetType.reaction_loop,
                     AssetType.studio_scene,
+                    AssetType.citation_card,
+                    AssetType.image,
                 }
                 and asset.status in {"submitted", "running"}
                 and asset.language
@@ -740,6 +738,8 @@ async def run_comfyui_adapter_once(
                     AssetType.broll,
                     AssetType.reaction_loop,
                     AssetType.studio_scene,
+                    AssetType.citation_card,
+                    AssetType.image,
                 }
                 and asset.status in {"submitted", "running"}
                 and asset.language == language
@@ -1710,7 +1710,10 @@ async def run_workflow_worker_once(
             user_id="workflow-worker",
         ),
         "comfyui": await run_comfyui_adapter_once(
-            repository=stage_repository,
+            # Reconciliation observes jobs that were already submitted. It is
+            # intentionally independent of active workflow admission so a
+            # pause or finished workflow cannot leave remote state stale.
+            repository=worker_repository,
             comfyui_service=comfyui_service,
             batch_limit=batch_limit,
             user_id="workflow-worker",

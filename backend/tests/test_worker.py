@@ -2146,7 +2146,7 @@ def test_visual_worker_leaves_non_retryable_failed_assets_for_manual_review() ->
 
 
 @pytest.mark.asyncio
-async def test_comfyui_adapter_worker_syncs_submitted_remote_visual_jobs(
+async def test_comfyui_adapter_worker_syncs_submitted_remote_visual_jobs_while_paused(
     tmp_path: Path,
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
@@ -2188,19 +2188,20 @@ async def test_comfyui_adapter_worker_syncs_submitted_remote_visual_jobs(
         definition=definition(),
         participants=[],
         model_endpoints=[],
+        workflow_control={"paused": True, "pause_reason": "awaiting media review"},
         transcripts=[transcript],
         assets=[
             Asset(
                 episode_id=transcript.episode_id,
-                asset_type="broll",
+                asset_type="image",
                 language="en",
                 source_entity_type="transcript_turn",
                 source_entity_id=str(turn.id),
                 status="submitted",
                 generation_metadata={
-                    "visual_role": "broll",
+                    "visual_role": "studio_seated_character",
                     "comfyui_endpoint_id": "comfyui-remote",
-                    "comfyui_workflow_id": "workflow-topic-broll-v1",
+                    "comfyui_workflow_id": "workflow-studio-seated-character-p40-v2",
                     "remote_job_id": "visual-worker-job-1",
                 },
             )
@@ -2222,16 +2223,129 @@ async def test_comfyui_adapter_worker_syncs_submitted_remote_visual_jobs(
     assert summary["episodes_scanned"] == 1
     assert summary["episodes_synced"] == 1
     assert summary["pending_visual_assets"] == 1
+    assert summary["workflow_blocked"] == 0
+    assert summary["skipped"] == 0
     assert summary["error_count"] == 0
     assert len(repository.saved) == 1
     assert synced_asset.status == "completed"
     assert synced_asset.storage_uri and synced_asset.storage_uri.startswith("object://")
     assert synced_asset.generation_metadata["media_probe"]["probe_tool"] == "image_header"
     assert synced_asset.generation_metadata["sync_attempt_count"] == 1
+    assert repository.episode.workflow_control["paused"] is True
     assert summary["enabled_comfyui_endpoints"] == 1
     assert summary["enabled_comfyui_workflows"] == sum(
         workflow.enabled for workflow in default_comfyui_workflows()
     )
+
+
+@pytest.mark.asyncio
+async def test_workflow_worker_reconciles_visual_jobs_without_active_workflow(
+    tmp_path: Path,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/history/visual-worker-job-detached"
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "prompt_id": "visual-worker-job-detached",
+                "image_base64": base64.b64encode(PNG_1X1).decode(),
+                "mime_type": "image/png",
+            },
+        )
+
+    transcript = TranscriptVersion(
+        episode_id="00000000-0000-0000-0000-000000000020",
+        type="broadcast",
+        language="en",
+        status="approved",
+    )
+    turn = TranscriptTurn(
+        source_discussion_turn_ids=["00000000-0000-0000-0000-000000000021"],
+        speaker_participant_id="host",
+        text="Observe existing work without starting new work.",
+        status="accepted",
+    )
+    transcript.turns.append(turn)
+    episode = Episode(
+        id=transcript.episode_id,
+        title="Detached Visual Worker",
+        slug="detached-visual-worker",
+        subject="Detached Visual Worker",
+        central_question="How are detached remote jobs observed?",
+        target_duration_seconds=60,
+        minimum_duration_seconds=54,
+        maximum_duration_seconds=66,
+        current_workflow_id=None,
+        canonical_transcript_version_id=transcript.id,
+        workflow_control={"paused": True, "pause_reason": "awaiting media review"},
+        definition=definition(),
+        participants=[],
+        model_endpoints=[],
+        transcripts=[transcript],
+        assets=[
+            Asset(
+                episode_id=transcript.episode_id,
+                asset_type="image",
+                language="en",
+                source_entity_type="transcript_turn",
+                source_entity_id=str(turn.id),
+                status="submitted",
+                generation_metadata={
+                    "visual_role": "studio_seated_character",
+                    "comfyui_endpoint_id": "comfyui-remote",
+                    "comfyui_workflow_id": "workflow-studio-seated-character-p40-v2",
+                    "remote_job_id": "visual-worker-job-detached",
+                },
+            )
+        ],
+    )
+
+    class DetachedWorkflowRepository(FakeWorkflowRepository):
+        def list_comfyui_endpoints(self) -> list[ComfyUiEndpoint]:
+            return [
+                ComfyUiEndpoint(
+                    id="comfyui-remote",
+                    name="ComfyUI Remote",
+                    adapter_type="comfyui_http",
+                    base_url="https://comfyui.example.test",
+                )
+            ]
+
+        def list_comfyui_workflows(self) -> list[ComfyUiWorkflow]:
+            return [
+                workflow.model_copy(update={"comfyui_endpoint_id": "comfyui-remote"})
+                for workflow in default_comfyui_workflows()
+            ]
+
+    repository = DetachedWorkflowRepository(episode)
+    settings = Settings(
+        object_storage_local_path=str(tmp_path / "object-store"),
+        worker_auto_start_production_runs_enabled=False,
+    )
+
+    summary = await run_workflow_worker_once(
+        repository=repository,
+        settings=settings,
+        batch_limit=10,
+        production_control=ProductionControlService(settings),
+        comfyui_service=ComfyUiService(
+            settings,
+            transport=httpx.MockTransport(handler),
+        ),
+        render_service=FakeRenderService(),
+        publisher_service=FakePublisherService(),
+    )
+
+    assert summary["workflow_admission"]["active_run_episode_count"] == 0
+    assert summary["workflow_admission"]["blocked_episode_count"] == 1
+    assert summary["stages"]["comfyui"]["episodes_synced"] == 1
+    assert summary["stages"]["comfyui"]["pending_visual_assets"] == 1
+    assert repository.episode.assets[0].status == "completed"
+    assert repository.episode.assets[0].storage_uri
+    assert repository.episode.current_workflow_id is None
+    assert repository.episode.workflow_control["paused"] is True
 
 
 def test_timeline_worker_builds_only_when_media_prerequisites_are_ready(
@@ -3822,10 +3936,14 @@ async def test_workflow_worker_records_idle_pass_without_advancing_paused_run(
     assert summary["automatic_stage_retry_count"] == 0
     assert summary["workflow_admission"]["blocked_episode_count"] == 1
     assert summary["workflow_admission"]["blocked_episode_ids"] == [str(repository.episode.id)]
+    assert summary["stages"]["comfyui"]["episodes_scanned"] == 1
+    assert summary["stages"]["comfyui"]["episodes_synced"] == 0
+    assert summary["stages"]["comfyui"]["pending_visual_assets"] == 0
     assert {
         stage: stage_summary["episodes_scanned"]
         for stage, stage_summary in summary["stages"].items()
-    } == {stage: 0 for stage in summary["stage_order"]}
+        if stage != "comfyui"
+    } == {stage: 0 for stage in summary["stage_order"] if stage != "comfyui"}
     assert summary["orchestration_records"][0]["episode_id"] == str(repository.episode.id)
     assert repository.episode.discussion_session is None
     assert repository.episode.status == EpisodeStatus.draft
