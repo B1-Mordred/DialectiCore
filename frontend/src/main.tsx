@@ -11796,6 +11796,9 @@ function isActionableApproval(episode: Episode, approval: Approval): boolean {
   if (!renderAsset || renderAsset.source_entity_type !== "timeline_asset") {
     return true;
   }
+  if (renderIntegrityFailed(episode, renderAsset)) {
+    return false;
+  }
   if (!isCurrentTalkshowRenderAsset(episode, renderAsset)) {
     return false;
   }
@@ -13986,11 +13989,27 @@ function latestRenderAsset(
     (asset) =>
       asset.asset_type === "render" &&
       asset.status === "completed" &&
+      !renderIntegrityFailed(episode, asset) &&
       isCurrentTalkshowRenderAsset(episode, asset) &&
       (renderType === undefined ||
         asset.generation_metadata?.render_type === renderType),
   );
   return renders.length > 0 ? renders[renders.length - 1] : null;
+}
+
+function renderIntegrityFailed(episode: Episode, asset: Asset): boolean {
+  const renderType = asset.generation_metadata?.render_type;
+  if (typeof renderType !== "string") {
+    return false;
+  }
+  const result = [...episode.quality_results]
+    .reverse()
+    .find(
+      (quality) =>
+        quality.target_id === asset.id &&
+        quality.check_type === `render_${renderType}_integrity`,
+    );
+  return Boolean(result && (result.status === "fail" || result.severity === "fail"));
 }
 
 function isCurrentTalkshowRenderAsset(episode: Episode, asset: Asset): boolean {

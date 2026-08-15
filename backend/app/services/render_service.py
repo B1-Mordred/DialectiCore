@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -52,6 +54,10 @@ class RenderService:
         is_talkshow_timeline = timeline_asset.source_entity_type == "transcript_version"
         if is_talkshow_timeline:
             self._ensure_timeline_integrity_passes(episode, timeline_asset)
+            self._materialized_timeline_for_render(
+                episode,
+                self._timeline_json(timeline_asset),
+            )
         if (
             is_talkshow_timeline
             and request.render_type == "final"
@@ -205,7 +211,10 @@ class RenderService:
             and not request.allow_unapproved_preview
         ):
             self._ensure_preview_approved(episode, timeline_asset)
-        timeline = self._timeline_json(timeline_asset)
+        timeline = self._materialized_timeline_for_render(
+            episode,
+            self._timeline_json(timeline_asset),
+        )
         if is_talkshow_timeline:
             self._ensure_timeline_integrity_passes(episode, timeline_asset)
             self._ensure_studio_camera_renderable(episode, timeline)
@@ -293,6 +302,10 @@ class RenderService:
             content_type="video/mp4" if preset.container == "mp4" else "application/octet-stream",
         )
         probe = self._probe_render(stored_render.path)
+        probe["programme_signal"] = self._programme_signal_probe(
+            stored_render.path,
+            timeline,
+        )
         asset = queued_asset or Asset(
             episode_id=episode.id,
             asset_type=AssetType.render,
@@ -375,8 +388,15 @@ class RenderService:
             probe=probe,
         )
         episode.quality_results.append(qc)
+        asset.generation_metadata["render_integrity_qc_id"] = str(qc.id)
+        asset.generation_metadata["render_integrity_qc_status"] = qc.status
+        qc_failed = qc.status == "fail" or qc.severity == QualitySeverity.fail
         render_approval = None
-        if is_talkshow_timeline and request.render_type == "preview":
+        if qc_failed:
+            asset.status = "rejected"
+            asset.generation_metadata["approval_status"] = "blocked_qc"
+            asset.generation_metadata["qc_blocked_at"] = datetime.now(UTC).isoformat()
+        elif is_talkshow_timeline and request.render_type == "preview":
             render_approval = Approval(
                 episode_id=episode.id,
                 stage="preview_render_review",
@@ -622,6 +642,153 @@ class RenderService:
                 "camera_direction_clip_count": len(camera_clips),
                 "source_clock_preserved": True,
             },
+        }
+
+    def _materialized_timeline_for_render(self, episode: Episode, timeline: dict) -> dict:
+        """Return a render-only copy with declared programme media made explicit.
+
+        Current timelines already contain a leading ``topic_primer`` segment.
+        Some imported timelines reserve the primer interval in a top-level
+        declaration instead. That legacy form is safe to materialize only when
+        the referenced immutable asset belongs to the episode and the first
+        discussion segment begins exactly where the primer ends.
+        """
+        materialized = copy.deepcopy(timeline)
+        segments = [
+            segment
+            for segment in materialized.get("segments", [])
+            if isinstance(segment, dict)
+        ]
+        explicit_primers = [
+            segment for segment in segments if segment.get("segment_type") == "topic_primer"
+        ]
+        declared = materialized.get("primer")
+        if not isinstance(declared, dict):
+            programme = materialized.get("program_structure")
+            declared = programme.get("primer") if isinstance(programme, dict) else None
+        if isinstance(declared, dict) and declared.get("included") is False:
+            declared = None
+
+        asset_by_id = {str(asset.id): asset for asset in episode.assets}
+        if explicit_primers:
+            if len(explicit_primers) != 1:
+                raise ValueError("timeline declares more than one topic primer segment")
+            primer_segment = explicit_primers[0]
+            if int(primer_segment.get("start_ms") or 0) != 0:
+                raise ValueError("topic primer must begin at the start of the programme")
+            primer_asset_id = str(
+                primer_segment.get("video_asset_id")
+                or primer_segment.get("source_primer_render_id")
+                or ""
+            )
+            self._ensure_render_source_asset(
+                asset_by_id.get(primer_asset_id),
+                "declared topic primer",
+            )
+            return materialized
+
+        if not isinstance(declared, dict):
+            return materialized
+        primer_asset_id = str(
+            declared.get("asset_id") or declared.get("render_asset_id") or ""
+        )
+        primer_duration_ms = int(declared.get("duration_ms") or 0)
+        if not primer_asset_id or primer_duration_ms <= 0:
+            raise ValueError("declared topic primer is missing its asset or duration")
+        primer_asset = asset_by_id.get(primer_asset_id)
+        self._ensure_render_source_asset(primer_asset, "declared topic primer")
+        if primer_asset is None:
+            raise AssertionError("validated primer asset unexpectedly missing")
+        if (
+            primer_asset.duration_ms
+            and abs(int(primer_asset.duration_ms) - primer_duration_ms) > 750
+        ):
+            raise ValueError("declared topic primer duration does not match its render asset")
+
+        first_start_ms = min(
+            (int(segment.get("start_ms") or 0) for segment in segments),
+            default=primer_duration_ms,
+        )
+        if abs(first_start_ms - primer_duration_ms) > 50:
+            raise ValueError(
+                "declared topic primer interval does not align with the first programme segment"
+            )
+        segment_id = f"segment-primer-{primer_asset.id}"
+        primer_segment = {
+            "id": segment_id,
+            "start_ms": 0,
+            "end_ms": primer_duration_ms,
+            "duration_ms": primer_duration_ms,
+            "segment_type": "topic_primer",
+            "source_primer_render_id": str(primer_asset.id),
+            "audio_asset_id": str(primer_asset.id),
+            "audio_source_offset_ms": 0,
+            "video_asset_id": str(primer_asset.id),
+            "visual_role": "topic_primer",
+            "visual_layers": [
+                {
+                    "role": "video_primary",
+                    "asset_id": str(primer_asset.id),
+                    "purpose": "completed_topic_primer",
+                }
+            ],
+            "camera_transition": "source_reveal",
+            "media_fingerprints": {
+                "primer_render": self._timeline_asset_fingerprint(primer_asset)
+            },
+        }
+        materialized["segments"] = [primer_segment, *segments]
+        tracks = materialized.get("tracks")
+        if isinstance(tracks, dict):
+            for track_name in ("video_primary", "audio_dialogue"):
+                track = tracks.get(track_name)
+                if isinstance(track, list) and all(isinstance(item, str) for item in track):
+                    if segment_id not in track:
+                        track.insert(0, segment_id)
+        chapters = materialized.get("chapters")
+        if isinstance(chapters, list) and not any(
+            isinstance(chapter, dict) and int(chapter.get("start_ms") or 0) == 0
+            for chapter in chapters
+        ):
+            chapters.insert(
+                0,
+                {
+                    "id": "chapter-primer",
+                    "start_ms": 0,
+                    "title": "Topic primer",
+                    "segment_id": segment_id,
+                },
+            )
+        materialized["render_materialization"] = {
+            "schema_version": "declared_primer_materialization.v1",
+            "source_form": "legacy_top_level_primer",
+            "primer_asset_id": str(primer_asset.id),
+            "primer_checksum": primer_asset.checksum,
+            "primer_duration_ms": primer_duration_ms,
+        }
+        return materialized
+
+    def _ensure_render_source_asset(self, asset: Asset | None, purpose: str) -> None:
+        if asset is None:
+            raise ValueError(f"{purpose} asset is not available in this episode")
+        if not asset.checksum:
+            raise ValueError(f"{purpose} asset has no immutable checksum")
+        if not self._asset_path_exists(asset):
+            raise ValueError(f"{purpose} asset is not completed or its media is unavailable")
+
+    @staticmethod
+    def _timeline_asset_fingerprint(asset: Asset) -> dict:
+        return {
+            "schema_version": "timeline_media_asset_fingerprint.v1",
+            "asset_id": str(asset.id),
+            "asset_type": asset.asset_type.value,
+            "source_entity_type": asset.source_entity_type,
+            "source_entity_id": asset.source_entity_id,
+            "status": asset.status,
+            "checksum": asset.checksum,
+            "storage_uri": asset.storage_uri,
+            "duration_ms": asset.duration_ms,
+            "render_ready": asset.generation_metadata.get("render_ready"),
         }
 
     @staticmethod
@@ -5787,6 +5954,83 @@ class RenderService:
             "audio_channels": self._optional_int(audio_stream.get("channels")),
         }
 
+    def _programme_signal_probe(self, path: Path, timeline: dict) -> dict:
+        """Measure black and silent coverage of declared programme openings."""
+        primer_duration_ms = sum(
+            int(segment.get("duration_ms") or 0)
+            for segment in timeline.get("segments", [])
+            if isinstance(segment, dict) and segment.get("segment_type") == "topic_primer"
+        )
+        if primer_duration_ms < 5_000:
+            return {
+                "probe_tool": "not_required",
+                "primer_duration_ms": primer_duration_ms,
+            }
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            return {
+                "probe_tool": "none",
+                "primer_duration_ms": primer_duration_ms,
+                "probe_warning": "ffmpeg not available for programme signal probe",
+            }
+        duration_seconds = primer_duration_ms / 1000
+        command = [
+            ffmpeg,
+            "-hide_banner",
+            "-nostats",
+            "-t",
+            f"{duration_seconds:.3f}",
+            "-i",
+            str(path),
+            "-vf",
+            "blackdetect=d=1:pix_th=0.10",
+            "-af",
+            "silencedetect=n=-50dB:d=1",
+            "-f",
+            "null",
+            "-",
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=self._ffmpeg_timeout_seconds(duration_seconds, minimum=30),
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            return {
+                "probe_tool": "ffmpeg",
+                "primer_duration_ms": primer_duration_ms,
+                "probe_warning": f"programme signal probe failed: {exc}",
+            }
+        output = completed.stderr or ""
+        black_seconds = sum(
+            min(duration_seconds, float(end)) - max(0.0, float(start))
+            for start, end in re.findall(
+                r"black_start:([0-9.]+)\s+black_end:([0-9.]+)",
+                output,
+            )
+            if min(duration_seconds, float(end)) > max(0.0, float(start))
+        )
+        silence_seconds = sum(
+            min(duration_seconds, float(end)) - max(0.0, float(start))
+            for start, end in re.findall(
+                r"silence_start:\s*([0-9.]+).*?silence_end:\s*([0-9.]+)",
+                output,
+                flags=re.DOTALL,
+            )
+            if min(duration_seconds, float(end)) > max(0.0, float(start))
+        )
+        return {
+            "probe_tool": "ffmpeg",
+            "primer_duration_ms": primer_duration_ms,
+            "black_duration_ms": round(black_seconds * 1000),
+            "black_ratio": min(1.0, black_seconds / duration_seconds),
+            "silence_duration_ms": round(silence_seconds * 1000),
+            "silence_ratio": min(1.0, silence_seconds / duration_seconds),
+        }
+
     def _render_qc(
         self,
         episode: Episode,
@@ -5883,6 +6127,28 @@ class RenderService:
             for segment in timeline.get("segments", [])
             if isinstance(segment, dict) and segment.get("segment_type") == "topic_primer"
         )
+        programme_signal = probe.get("programme_signal")
+        if topic_primer_duration_ms >= 5_000 and isinstance(programme_signal, dict):
+            black_ratio = self._optional_float(programme_signal.get("black_ratio"))
+            silence_ratio = self._optional_float(programme_signal.get("silence_ratio"))
+            if black_ratio is not None and black_ratio >= 0.95:
+                issues.append(
+                    {
+                        "severity": "fail",
+                        "issue": "render_topic_primer_near_black",
+                        "black_ratio": black_ratio,
+                        "black_duration_ms": programme_signal.get("black_duration_ms"),
+                    }
+                )
+            if silence_ratio is not None and silence_ratio >= 0.95:
+                issues.append(
+                    {
+                        "severity": "fail",
+                        "issue": "render_topic_primer_near_silent",
+                        "silence_ratio": silence_ratio,
+                        "silence_duration_ms": programme_signal.get("silence_duration_ms"),
+                    }
+                )
         episode_maximum_duration_ms = discussion_maximum_duration_ms + topic_primer_duration_ms
         target_duration_ms = int(episode.target_duration_seconds * 1000)
         final_runtime_within_episode_bounds = None
@@ -6071,6 +6337,7 @@ class RenderService:
                 "maximum_duration_ms": episode_maximum_duration_ms,
                 "discussion_maximum_duration_ms": discussion_maximum_duration_ms,
                 "topic_primer_duration_ms": topic_primer_duration_ms,
+                "programme_signal": programme_signal,
                 "final_runtime_within_episode_bounds": final_runtime_within_episode_bounds,
                 "width": probe.get("width"),
                 "height": probe.get("height"),
@@ -6605,6 +6872,8 @@ class RenderService:
         return candidates[-1]
 
     def _final_render_approved(self, episode: Episode, render_asset: Asset) -> bool:
+        if self._render_integrity_failed(episode, render_asset):
+            return False
         if render_asset.generation_metadata.get("approval_status") == "approved":
             return True
         return any(
@@ -6628,6 +6897,8 @@ class RenderService:
         raise ValueError("approved preview render is required before final rendering")
 
     def _preview_render_approved(self, episode: Episode, render_asset: Asset) -> bool:
+        if self._render_integrity_failed(episode, render_asset):
+            return False
         if render_asset.generation_metadata.get("approval_status") == "approved":
             return True
         return any(
@@ -6653,8 +6924,26 @@ class RenderService:
                 and asset.source_entity_id == str(timeline_asset.id)
                 and asset.status == "completed"
                 and asset.generation_metadata.get("render_type") == render_type
+                and not self._render_integrity_failed(episode, asset)
             ),
             None,
+        )
+
+    @staticmethod
+    def _render_integrity_failed(episode: Episode, render_asset: Asset) -> bool:
+        result = next(
+            (
+                result
+                for result in reversed(episode.quality_results)
+                if result.target_id == str(render_asset.id)
+                and result.check_type
+                == f"render_{render_asset.generation_metadata.get('render_type')}_integrity"
+            ),
+            None,
+        )
+        return bool(
+            result
+            and (result.status == "fail" or result.severity == QualitySeverity.fail)
         )
 
     def _target_thumbnail_asset(

@@ -127,6 +127,7 @@ function latestRenderForTimeline(
       asset.source_entity_type === "timeline_asset" &&
       asset.source_entity_id === timeline.id &&
       asset.generation_metadata?.render_type === renderType &&
+      !renderIntegrityFailed(episode, asset) &&
       (presetId === undefined ||
         asset.generation_metadata?.preset_id === presetId),
   );
@@ -146,6 +147,7 @@ function activeOrCompletedRenderForTimeline(
       asset.source_entity_type === "timeline_asset" &&
       asset.source_entity_id === timeline.id &&
       asset.generation_metadata?.render_type === renderType &&
+      (asset.status !== "completed" || !renderIntegrityFailed(episode, asset)) &&
       asset.generation_metadata?.preset_id === presetId,
   );
   return renders.length > 0 ? renders[renders.length - 1] : null;
@@ -155,6 +157,9 @@ function previewRenderApproved(
   episode: RenderGateEpisode,
   renderAsset: RenderGateAsset,
 ): boolean {
+  if (renderIntegrityFailed(episode, renderAsset)) {
+    return false;
+  }
   if (renderAsset.generation_metadata?.approval_status === "approved") {
     return true;
   }
@@ -165,4 +170,22 @@ function previewRenderApproved(
       approval.target_id === renderAsset.id &&
       approval.decision === "approved",
   );
+}
+
+function renderIntegrityFailed(
+  episode: RenderGateEpisode,
+  asset: RenderGateAsset,
+): boolean {
+  const renderType = asset.generation_metadata?.render_type;
+  if (typeof renderType !== "string") {
+    return false;
+  }
+  const result = [...(episode.quality_results ?? [])]
+    .reverse()
+    .find(
+      (quality) =>
+        quality.target_id === asset.id &&
+        quality.check_type === `render_${renderType}_integrity`,
+    );
+  return Boolean(result && (result.status === "fail" || result.severity === "fail"));
 }

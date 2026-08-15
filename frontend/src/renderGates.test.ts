@@ -160,6 +160,34 @@ describe("render gates", () => {
     ).toBe(true);
   });
 
+  it("does not treat a failed-QC preview as current or reviewable", () => {
+    const preview = render("preview-failed", "preview", {
+      approvalStatus: "approved",
+    });
+    const failedEpisode = episode({
+      assets: [timeline, preview],
+      approvals: [
+        {
+          stage: "preview_render_review",
+          target_type: "render_asset",
+          target_id: preview.id,
+          decision: "approved",
+        },
+      ],
+      quality_results: [
+        {
+          check_type: "render_preview_integrity",
+          target_id: preview.id,
+          status: "fail",
+          severity: "fail",
+        },
+      ],
+    });
+
+    expect(canRenderFinal(failedEpisode)).toBe(false);
+    expect(canRenderPreview(failedEpisode)).toBe(true);
+  });
+
   it("does not offer another final render for the same completed timeline and preset", () => {
     const preview = render("preview-current", "preview", {
       approvalStatus: "approved",

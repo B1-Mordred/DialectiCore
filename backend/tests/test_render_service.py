@@ -209,6 +209,84 @@ def test_preview_composition_includes_the_full_timeline() -> None:
     assert composition["segment_count"] == 2
 
 
+def test_legacy_declared_primer_is_materialized_as_programme_segment(tmp_path: Path) -> None:
+    service = RenderService(Settings(object_storage_local_path=str(tmp_path / "objects")))
+    episode = EpisodeRepository().create(
+        EpisodeCreateRequest(
+            definition=definition(),
+            participants=default_participants(),
+            model_endpoints=default_model_endpoints(),
+        )
+    )
+    stored = service.object_store.put_bytes(
+        key=f"renders/{episode.id}/primer.mp4",
+        payload=b"immutable primer",
+        content_type="video/mp4",
+    )
+    primer = Asset(
+        episode_id=episode.id,
+        asset_type=AssetType.render,
+        source_entity_type="primer_timeline",
+        source_entity_id="primer-source",
+        storage_uri=stored.uri,
+        mime_type="video/mp4",
+        duration_ms=10_000,
+        checksum=stored.checksum,
+        status="completed",
+        generation_metadata={"object_storage_path": str(stored.path)},
+    )
+    episode.assets.append(primer)
+
+    materialized = service._materialized_timeline_for_render(
+        episode,
+        {
+            "duration_ms": 11_000,
+            "primer": {"asset_id": str(primer.id), "duration_ms": 10_000},
+            "segments": [
+                {"id": "turn-1", "start_ms": 10_000, "end_ms": 11_000}
+            ],
+            "tracks": {"video_primary": ["turn-1"], "audio_dialogue": ["turn-1"]},
+            "chapters": [],
+        },
+    )
+
+    opening = materialized["segments"][0]
+    assert opening["segment_type"] == "topic_primer"
+    assert opening["start_ms"] == 0
+    assert opening["end_ms"] == 10_000
+    assert opening["video_asset_id"] == str(primer.id)
+    assert opening["audio_asset_id"] == str(primer.id)
+    assert opening["media_fingerprints"]["primer_render"]["asset_type"] == "render"
+    assert (
+        opening["media_fingerprints"]["primer_render"]["storage_uri"]
+        == primer.storage_uri
+    )
+    assert materialized["tracks"]["video_primary"][0] == opening["id"]
+    assert materialized["render_materialization"]["primer_checksum"] == stored.checksum
+
+
+def test_unresolved_declared_primer_blocks_render_materialization() -> None:
+    episode = EpisodeRepository().create(
+        EpisodeCreateRequest(
+            definition=definition(),
+            participants=default_participants(),
+            model_endpoints=default_model_endpoints(),
+        )
+    )
+
+    with pytest.raises(ValueError, match="not available in this episode"):
+        RenderService(Settings())._materialized_timeline_for_render(
+            episode,
+            {
+                "duration_ms": 11_000,
+                "primer": {"asset_id": str(uuid4()), "duration_ms": 10_000},
+                "segments": [
+                    {"id": "turn-1", "start_ms": 10_000, "end_ms": 11_000}
+                ],
+            },
+        )
+
+
 def test_seated_panel_composition_places_rear_screen_media_in_safe_region(
     tmp_path: Path,
 ) -> None:
@@ -1525,6 +1603,76 @@ def test_final_render_creates_targeted_pending_approval(tmp_path: Path) -> None:
     assert rendered.audit_events[-1].event_type == "approval.required"
     assert rendered.audit_events[-1].details["render_asset_id"] == str(render_asset.id)
 
+
+def test_failing_render_qc_quarantines_preview_without_approval(tmp_path: Path) -> None:
+    settings = Settings(object_storage_local_path=str(tmp_path / "object-store"))
+    service = RenderService(settings)
+    episode = EpisodeRepository().create(
+        EpisodeCreateRequest(
+            definition=definition(),
+            participants=default_participants(),
+            model_endpoints=default_model_endpoints(),
+        )
+    )
+    timeline_asset = Asset(
+        episode_id=episode.id,
+        asset_type=AssetType.timeline,
+        language="en",
+        source_entity_type="transcript_version",
+        source_entity_id="transcript-test",
+        checksum="sha256:timeline",
+        status="completed",
+        generation_metadata={
+            "timeline_json": {
+                "id": "timeline-test",
+                "language": "en",
+                "duration_ms": 1000,
+                "segments": [],
+            }
+        },
+    )
+    episode.assets.append(timeline_asset)
+    service._render_manifest = lambda **_kwargs: {  # type: ignore[method-assign]
+        "schema_version": "render_manifest.v1",
+        "id": "render-test",
+    }
+    service._render_media_bytes = lambda *_args: b"fake mp4"  # type: ignore[method-assign]
+    service._probe_render = lambda _path: {  # type: ignore[method-assign]
+        "duration_ms": 1000,
+        "width": 1280,
+        "height": 720,
+        "fps": 24,
+    }
+    service._programme_signal_probe = lambda *_args: {}  # type: ignore[method-assign]
+    service._render_qc = lambda **kwargs: QualityResult(  # type: ignore[method-assign]
+        episode_id=episode.id,
+        target_type="render_asset",
+        target_id=str(kwargs["render_asset"].id),
+        check_type="render_preview_integrity",
+        severity=QualitySeverity.fail,
+        status="fail",
+        details={"failure_count": 1, "warning_count": 0},
+    )
+
+    rendered = service.render_episode(
+        episode,
+        RenderRequest(
+            timeline_asset_id=timeline_asset.id,
+            render_type="preview",
+            preset_id="preview-low-bitrate",
+            user_id="tester",
+        ),
+        presets=default_render_presets(),
+    )
+
+    render_asset = [
+        asset for asset in rendered.assets if asset.asset_type == AssetType.render
+    ][-1]
+    assert render_asset.status == "rejected"
+    assert render_asset.generation_metadata["approval_status"] == "blocked_qc"
+    assert not any(
+        approval.target_id == str(render_asset.id) for approval in rendered.approvals
+    )
 
 def test_primer_timeline_renders_do_not_create_talkshow_approvals(tmp_path: Path) -> None:
     settings = Settings(object_storage_local_path=str(tmp_path / "object-store"))
