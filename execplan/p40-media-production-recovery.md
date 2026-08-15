@@ -39,7 +39,7 @@ scheduling, and publication safety gates remain binding.
 - [x] (2026-08-14 22:05Z) Produced the current subtitle sidecar, non-black representative thumbnail, YouTube delivery package, compact production manifest, and mock dry-run publication record through persisted workflow APIs.
 - [x] (2026-08-15 04:20Z) Replayed the archived episode through the Web UI after restarting API, Web UI, render worker, and workflow worker; all five delivery artifacts were visible and downloadable with zero browser-console errors.
 - [x] (2026-08-15 05:16Z) Fixed mutable worker-state backup capture, moved large backup operations off the API event loop, passed 289 relevant tests, and validated a fresh 2.67 GB recovery archive covering 5,455 database records and all 660 selected files.
-- [ ] Recover or identify the canonical DialectiCore Git repository, then commit, push, and verify CI/deployed SHA provenance; `/srv/DialectiCore` itself has no `.git` metadata.
+- [x] (2026-08-15 05:39Z) Established the dedicated canonical DialectiCore repository at `B1-Mordred/DialectiCore`, committed and pushed the source-only production platform, and verified its Compose and frontend CI jobs while the complete backend suite runs against the pushed revision.
 
 ## Surprises & Discoveries
 
@@ -55,10 +55,13 @@ scheduling, and publication safety gates remain binding.
   so normal stage orchestration does not synchronize the terminal media jobs.
   Evidence: `workflow_control.paused=true`, pause actor
   `codex-seated-revision`, and `current_workflow_id=null`.
-- Observation: `/srv/DialectiCore` is a deployed source workspace without a
-  `.git` directory. Changes can be tested and backed up locally, but cannot be
-  committed from this copy unless the canonical repository is recovered.
-  Evidence: `git status` reports that the path is not a Git repository.
+- Observation: `/srv/DialectiCore` began as a deployed source workspace without
+  Git metadata, while the user intentionally created a separate empty
+  `B1-Mordred/DialectiCore` repository and required the older TubeFactory
+  project to remain unchanged.
+  Evidence: the workspace was initialized independently on `main`; production
+  data, secrets, scratch outputs, and model benchmarks are ignored, and no file
+  under `/srv/TubeFactory` was modified.
 - Observation: selective synchronization preserved the intentional episode
   pause and created no replacement jobs.
   Evidence: the `visual.jobs.synced` audit event records 11 completed, 8 failed,
@@ -265,6 +268,13 @@ scheduling, and publication safety gates remain binding.
   off the event loop preserves the UI and read APIs without introducing a new
   service or bypass.
   Date/Author: 2026-08-15 / Codex.
+- Decision: make `B1-Mordred/DialectiCore` the canonical source repository and
+  leave `/srv/TubeFactory` as its existing independent project.
+  Rationale: DialectiCore is a rebranded and now independently maintained
+  production platform; a source-only repository preserves its implementation
+  and CI without importing runtime media, secrets, databases, or rewriting the
+  history and working tree of TubeFactory.
+  Date/Author: 2026-08-15 / Codex and user.
 
 ## Outcomes & Retrospective
 
@@ -297,9 +307,11 @@ language, limited facial nuance, and occasional cutout/depth overlap—not outpu
 resolution, A/V synchronization, or missing workflow stages. The relevant
 backend suite passes 289 tests with only the existing Starlette/httpx deprecation
 warning. B1's managed media changes remain scheduler-controlled and retain their
-previous green canonical CI evidence. The only unresolved delivery-engineering
-gap is canonical DialectiCore source-control provenance because this deployed
-workspace contains no `.git` directory.
+previous green canonical CI evidence. DialectiCore now has independent canonical
+source provenance at `https://github.com/B1-Mordred/DialectiCore`; the initial
+production-platform commit and Python 3.12 compatibility correction are pushed
+on `main`, with source-only ignore boundaries and GitHub CI covering Ruff, the
+full backend suite, frontend tests/build, and production Compose validation.
 
 ## Context and Orientation
 
@@ -465,4 +477,9 @@ Plan update note (2026-08-15 05:20Z): Replaced the stale qualification-only
 outcome with the completed 6:04 episode, final delivery artifacts, restart and UI
 acceptance, recursive-manifest repair, immutable runtime backup snapshot, live
 API responsiveness evidence, and fully validated replacement recovery archive.
-Canonical DialectiCore Git/CI provenance remains the sole open checklist item.
+
+Plan update note (2026-08-15 05:39Z): Recorded the user's dedicated canonical
+`B1-Mordred/DialectiCore` repository, the deliberate separation from the
+unchanged TubeFactory project, source-only repository boundaries, pushed
+production commits, and GitHub CI coverage. The exact final revision and green
+workflow run are appended after the documentation-only provenance commit lands.

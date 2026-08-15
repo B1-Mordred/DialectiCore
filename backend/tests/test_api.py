@@ -7035,6 +7035,7 @@ def test_system_health_reports_components_counts_and_pending_work(tmp_path: Path
     repository = EpisodeRepository()
     settings = Settings(
         object_storage_local_path=str(tmp_path / "object-store"),
+        backup_path=str(tmp_path / "backups"),
         runtime_state_path=str(tmp_path / "runtime-state"),
         worker_required_roles=(
             "workflow-worker,discussion-worker,research-worker,localization-worker,"
@@ -8346,13 +8347,15 @@ def test_system_health_and_metrics_report_production_deployment_readiness(
     monkeypatch,
 ) -> None:
     repository = EpisodeRepository()
+    database_url = f"sqlite:///{tmp_path / 'dialecticore.db'}"
+    _stamp_alembic_revision(database_url, "0011_language_profile_records")
     monkeypatch.setenv("DIALECTICORE_API_KEY", "change-me-before-enabling-auth")
     monkeypatch.setenv("MINIO_ROOT_USER", "dialecticore")
     monkeypatch.setenv("MINIO_ROOT_PASSWORD", "change-me-in-production")
     monkeypatch.setenv("POSTGRES_PASSWORD", "dialecticore")
     settings = Settings(
         env="production",
-        database_url="sqlite:///./dialecticore-dev.db",
+        database_url=database_url,
         object_storage_backend="local",
         object_storage_local_path=str(tmp_path / "object-store"),
         backup_path=str(tmp_path / "backups"),
