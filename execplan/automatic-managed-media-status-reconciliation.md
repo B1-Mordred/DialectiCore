@@ -21,7 +21,7 @@ reloading the page.
 - [x] (2026-08-15 22:12Z) Added regression coverage for submitted managed image media on paused and workflow-detached episodes.
 - [x] (2026-08-15 22:12Z) Moved passive ComfyUI reconciliation outside active workflow admission without weakening any producer-stage controls.
 - [x] (2026-08-15 22:28Z) Restarted only the workflow coordinator and proved automatic API and open-browser convergence from active to six completed assets.
-- [ ] Commit, push, watch CI, and record terminal evidence.
+- [x] (2026-08-15 22:35Z) Committed and pushed `3480c6fb7e4435d67e8ea31c1655a54931ecc152`; GitHub CI run `31912244361` passed Compose, frontend, Ruff, and all backend tests.
 
 ## Surprises & Discoveries
 
@@ -85,7 +85,10 @@ separate performance clips that remain planned and were never submitted.
 
 Validation passed 835 backend tests, 110 frontend tests, Ruff, the production Web
 build, and `git diff --check`. The only backend warning is the existing Starlette
-`httpx` deprecation. Commit and CI evidence remain to be added.
+`httpx` deprecation. Implementation commit
+`3480c6fb7e4435d67e8ea31c1655a54931ecc152` is on `origin/main`; GitHub CI run
+`31912244361` passed all three jobs. All four development services are active, the
+worktree is clean, and local and remote SHAs match.
 
 ## Context and Orientation
 
@@ -180,3 +183,6 @@ the plan separates passive state convergence from stage execution.
 Plan update note (2026-08-15 22:28Z): recorded the additional active-run and image
 type filters found by live activation, the final architecture, browser evidence,
 and complete local validation.
+
+Plan update note (2026-08-15 22:35Z): recorded the pushed implementation, green CI,
+service health, and repository equality as terminal evidence.
