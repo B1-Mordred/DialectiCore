@@ -239,6 +239,13 @@ class TimelineService:
                 )
                 if source_in_ms < 0 or source_out_ms <= source_in_ms:
                     raise ValueError(f"timeline track {track_name} source range must be positive")
+                transition_duration_ms = raw_clip.get("transition_duration_ms")
+                if transition_duration_ms is not None:
+                    transition_duration_ms = int(transition_duration_ms)
+                    if not 0 <= transition_duration_ms <= 5_000:
+                        raise ValueError(
+                            f"timeline track {track_name} transition duration must be 0-5000ms"
+                        )
                 clips.append(
                     {
                         **raw_clip,
@@ -248,6 +255,11 @@ class TimelineService:
                         "duration_ms": end_ms - start_ms,
                         "source_in_ms": source_in_ms,
                         "source_out_ms": source_out_ms,
+                        **(
+                            {"transition_duration_ms": transition_duration_ms}
+                            if transition_duration_ms is not None
+                            else {}
+                        ),
                     }
                 )
                 seen_ids.add(clip_id)
@@ -838,16 +850,19 @@ class TimelineService:
                 "linked_segment_id": segment_id,
                 "crop_mode": "cover",
                 "overscan": 1.02,
+                "transition_duration_ms": 1_500,
                 "keyframes": [
                     {
                         "time_ms": broll_start_ms,
                         "state": "rear_screen" if seated_panel else "fullscreen",
                         "easing": "ease_in_out",
+                        "transition_duration_ms": 1_500,
                     },
                     {
                         "time_ms": broll_end_ms,
                         "state": "rear_screen" if seated_panel else "fullscreen",
                         "easing": "ease_in_out",
+                        "transition_duration_ms": 1_500,
                     },
                 ],
             }

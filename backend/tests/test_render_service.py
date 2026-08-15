@@ -495,10 +495,23 @@ def test_parallel_broll_render_view_preserves_dialogue_and_source_clock() -> Non
                     "linked_segment_id": "segment-1",
                     "start_ms": 2_000,
                     "end_ms": 9_000,
+                    "transition_duration_ms": 1_500,
                     "keyframes": [
-                        {"time_ms": 2_000, "state": "rear_screen"},
-                        {"time_ms": 5_000, "state": "fullscreen"},
-                        {"time_ms": 8_000, "state": "rear_screen"},
+                        {
+                            "time_ms": 2_000,
+                            "state": "rear_screen",
+                            "transition_duration_ms": 1_000,
+                        },
+                        {
+                            "time_ms": 5_000,
+                            "state": "fullscreen",
+                            "transition_duration_ms": 2_000,
+                        },
+                        {
+                            "time_ms": 8_000,
+                            "state": "rear_screen",
+                            "transition_duration_ms": 1_250,
+                        },
                     ],
                 }
             ],
@@ -532,12 +545,40 @@ def test_parallel_broll_render_view_preserves_dialogue_and_source_clock() -> Non
     assert render_view["segments"][1]["broll_playback"]["source_start_ms"] == 500
     assert render_view["segments"][2]["broll_playback"]["source_start_ms"] == 3_500
     assert render_view["segments"][3]["broll_playback"]["source_start_ms"] == 6_500
+    assert render_view["segments"][1]["transition_duration_ms"] == 1_000
+    assert render_view["segments"][2]["transition_duration_ms"] == 2_000
+    assert render_view["segments"][3]["transition_duration_ms"] == 1_250
     assert render_view["segments"][1]["broll_playback"]["state"] == "rear_screen"
     assert render_view["segments"][2]["broll_playback"]["state"] == "fullscreen"
     assert render_view["segments"][3]["broll_playback"]["state"] == "rear_screen"
     assert render_view["segments"][2]["audio_asset_id"] == "audio-1"
     assert render_view["segments"][2]["direction"]["speaker_mouth_mode"] == ("off_camera_dialogue")
     assert render_view["render_materialization"]["source_clock_preserved"] is True
+
+
+def test_parallel_broll_transition_duration_reaches_render_policy() -> None:
+    service = RenderService(Settings())
+
+    policy = service._transition_policy_for_segment(
+        {
+            "camera_transition": "dissolve",
+            "transition_duration_ms": 1_750,
+        },
+        1,
+    )
+
+    assert policy["name"] == "soft_dissolve"
+    assert policy["duration_ms"] == 1_750
+
+    bounded = service._transition_policy_for_segment(
+        {
+            "camera_transition": "dissolve",
+            "transition_duration_ms": 9_000,
+        },
+        1,
+    )
+
+    assert bounded["duration_ms"] == 5_000
 
 
 def test_scene_filter_omits_speaker_lower_third_for_off_camera_segment() -> None:

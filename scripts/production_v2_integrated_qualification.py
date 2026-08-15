@@ -27,8 +27,28 @@ SELECTED_CANDIDATE = {
     "mistral": "v2_normalized_master",
 }
 SEAT_CENTERS_X = (350, 545, 740, 935, 1130, 1325)
-CHARACTER_SIZE = 330
-CHARACTER_TOP = 282
+# The five normalized masters have a 1280px canvas and an alpha baseline at
+# y=1119.  DeepSeek's detector-compatible input is a 640px crop with its alpha
+# baseline at y=445.  Scaling every *canvas* to 330px therefore made DeepSeek's
+# actual body about 20 percent shorter.  Keep per-input canvas sizes and anchor
+# the resulting alpha baseline behind the desk instead of moving a small body
+# upward by an arbitrary top coordinate.
+CHARACTER_CANVAS_SIZE = {
+    "chatgpt": 330,
+    "claude": 330,
+    "deepseek": 414,
+    "gemini": 330,
+    "grok": 330,
+    "mistral": 330,
+}
+MATTE_GEOMETRY = {
+    "chatgpt": {"canvas": 1280, "alpha_bottom": 1119},
+    "claude": {"canvas": 1280, "alpha_bottom": 1119},
+    "deepseek": {"canvas": 640, "alpha_bottom": 445},
+    "gemini": {"canvas": 1280, "alpha_bottom": 1119},
+    "grok": {"canvas": 1280, "alpha_bottom": 1119},
+    "mistral": {"canvas": 1280, "alpha_bottom": 1119},
+}
 CAMERA_WIDTH = 800
 CAMERA_HEIGHT = 450
 CAMERA_TOP = 190
@@ -38,7 +58,9 @@ SCREEN_Y = 190
 SCREEN_WIDTH = 1065
 SCREEN_HEIGHT = 400
 DESK_TOP = 584
+DESK_OCCLUSION_OVERLAP = 12
 SEGMENT_SECONDS = 4
+DEFAULT_PRESENTATION_TRANSITION_SECONDS = 2.0
 
 
 def _run(command: list[str]) -> None:
@@ -70,6 +92,42 @@ def _animation_path(participant_id: str) -> Path:
     return ANIMATION_ROOT / participant_id / f"{SELECTED_CANDIDATE[participant_id]}.mp4"
 
 
+def _character_layout(participant_id: str) -> dict[str, int]:
+    size = CHARACTER_CANVAS_SIZE[participant_id]
+    geometry = MATTE_GEOMETRY[participant_id]
+    scaled_alpha_bottom = round(geometry["alpha_bottom"] * size / geometry["canvas"])
+    target_alpha_bottom = DESK_TOP + DESK_OCCLUSION_OVERLAP
+    return {
+        "canvas_size": size,
+        "left": SEAT_CENTERS_X[PARTICIPANTS.index(participant_id)] - size // 2,
+        "top": target_alpha_bottom - scaled_alpha_bottom,
+        "target_alpha_bottom": target_alpha_bottom,
+    }
+
+
+def _presentation_blend(index: int, transition_seconds: float) -> str:
+    """Return an eased studio/fullscreen blend for the qualification round trip."""
+    duration = max(0.25, min(float(transition_seconds), SEGMENT_SECONDS - 0.5))
+    duration_frames = round(duration * 24)
+    if index == 2:
+        start_frame = 12
+        end_frame = start_frame + duration_frames
+        progress = f"(0.5-0.5*cos(PI*(N-{start_frame})/{duration_frames}))"
+        return (
+            f"if(lt(N,{start_frame}),A,"
+            f"if(lt(N,{end_frame}),A*(1-{progress})+B*{progress},B))"
+        )
+    if index == 3:
+        start_frame = round((SEGMENT_SECONDS - 0.5 - duration) * 24)
+        end_frame = start_frame + duration_frames
+        progress = f"(0.5-0.5*cos(PI*(N-{start_frame})/{duration_frames}))"
+        return (
+            f"if(lt(N,{start_frame}),B,"
+            f"if(lt(N,{end_frame}),B*(1-{progress})+A*{progress},A))"
+        )
+    return "A"
+
+
 def _render_segment(
     *,
     index: int,
@@ -77,6 +135,7 @@ def _render_segment(
     studio: Path,
     broll: Path,
     output: Path,
+    presentation_transition_seconds: float,
 ) -> None:
     command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
     command.extend(["-loop", "1", "-i", str(studio)])
@@ -116,21 +175,23 @@ def _render_segment(
     for seat_index, seated_id in enumerate(PARTICIPANTS):
         source_index = input_index
         matte_index = input_index + 1
-        x = SEAT_CENTERS_X[seat_index] - CHARACTER_SIZE // 2
+        layout = _character_layout(seated_id)
+        character_size = layout["canvas_size"]
+        x = layout["left"]
         if seated_id == participant_id:
             filter_parts.extend(
                 [
                     (
-                        f"[{source_index}:v]scale={CHARACTER_SIZE}:{CHARACTER_SIZE}:"
+                        f"[{source_index}:v]scale={character_size}:{character_size}:"
                         "force_original_aspect_ratio=decrease,"
-                        f"pad={CHARACTER_SIZE}:{CHARACTER_SIZE}:(ow-iw)/2:(oh-ih)/2,"
+                        f"pad={character_size}:{character_size}:(ow-iw)/2:(oh-ih)/2,"
                         "format=rgb24[active_rgb]"
                     ),
                     (
                         f"[{matte_index}:v]alphaextract,"
-                        f"scale={CHARACTER_SIZE}:{CHARACTER_SIZE}:"
+                        f"scale={character_size}:{character_size}:"
                         "force_original_aspect_ratio=decrease,"
-                        f"pad={CHARACTER_SIZE}:{CHARACTER_SIZE}:(ow-iw)/2:(oh-ih)/2:color=black"
+                        f"pad={character_size}:{character_size}:(ow-iw)/2:(oh-ih)/2:color=black"
                         "[active_alpha]"
                     ),
                     "[active_rgb][active_alpha]alphamerge[character]",
@@ -138,14 +199,14 @@ def _render_segment(
             )
         else:
             filter_parts.append(
-                f"[{source_index}:v]scale={CHARACTER_SIZE}:{CHARACTER_SIZE}:"
+                f"[{source_index}:v]scale={character_size}:{character_size}:"
                 "force_original_aspect_ratio=decrease,"
-                f"pad={CHARACTER_SIZE}:{CHARACTER_SIZE}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,"
+                f"pad={character_size}:{character_size}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,"
                 "eq=brightness=-0.12:saturation=0.55,format=rgba[character]"
             )
         next_label = f"people{seat_index}"
         filter_parts.append(
-            f"[{previous}][character]overlay={x}:{CHARACTER_TOP}:format=auto[{next_label}]"
+            f"[{previous}][character]overlay={x}:{layout['top']}:format=auto[{next_label}]"
         )
         previous = next_label
         input_index += 2
@@ -169,20 +230,15 @@ def _render_segment(
             (
                 f"[extended_studio]crop={CAMERA_WIDTH}:{CAMERA_HEIGHT}:"
                 f"{camera_x}:{CAMERA_TOP},"
-                "scale=1280:720:flags=lanczos,setsar=1[studio_camera]"
+                "scale=1280:720:flags=lanczos,setsar=1,setpts=N/(24*TB)[studio_camera]"
             ),
             (
                 "[1:v]scale=1280:720:force_original_aspect_ratio=increase,"
-                "crop=1280:720,setsar=1[fullscreen]"
+                "crop=1280:720,setsar=1,setpts=N/(24*TB)[fullscreen]"
             ),
         ]
     )
-    if index == 2:
-        blend = "if(lt(T,1),A,if(lt(T,2),A*(2-T)+B*(T-1),B))"
-    elif index == 3:
-        blend = "if(lt(T,2),B,if(lt(T,3),A*(T-2)+B*(3-T),A))"
-    else:
-        blend = "A"
+    blend = _presentation_blend(index, presentation_transition_seconds)
     filter_parts.append(
         f"[studio_camera][fullscreen]blend=all_expr='{blend}',fps=24,format=yuv420p[vout]"
     )
@@ -228,7 +284,15 @@ def main() -> int:
             / "opening-media/b196f11bebc88fe8.mp4"
         ),
     )
+    parser.add_argument(
+        "--presentation-transition-seconds",
+        type=float,
+        default=DEFAULT_PRESENTATION_TRANSITION_SECONDS,
+        help="Eased studio/fullscreen B-roll transition duration (0.25-3.5 seconds).",
+    )
     args = parser.parse_args()
+    if not 0.25 <= args.presentation_transition_seconds <= SEGMENT_SECONDS - 0.5:
+        parser.error("--presentation-transition-seconds must be between 0.25 and 3.5")
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
     studio = OUTPUT_ROOT / "studio-reference.png"
     _download_studio(studio)
@@ -241,6 +305,7 @@ def main() -> int:
             studio=studio,
             broll=args.broll,
             output=segment,
+            presentation_transition_seconds=args.presentation_transition_seconds,
         )
         segments.append(segment)
     concat = OUTPUT_ROOT / "concat.txt"
@@ -267,7 +332,7 @@ def main() -> int:
         ]
     )
     manifest = {
-        "schema_version": "dialecticore.production_v2.integrated_qualification.v1",
+        "schema_version": "dialecticore.production_v2.integrated_qualification.v2",
         "created_at": datetime.now(UTC).isoformat(),
         "studio": {
             "uri": STUDIO_URI,
@@ -291,6 +356,7 @@ def main() -> int:
                 "master_sha256": _sha256(_master_path(participant_id)),
                 "seat_center_x": SEAT_CENTERS_X[index],
                 "camera_crop_x_in_extended_studio": SEAT_CENTERS_X[index],
+                "composition_layout": _character_layout(participant_id),
             }
             for index, participant_id in enumerate(PARTICIPANTS)
         ],
@@ -302,11 +368,19 @@ def main() -> int:
                 "height": SCREEN_HEIGHT,
             },
             "fullscreen_round_trip": {
-                "start_ms": 9_000,
-                "fullscreen_ms": [10_000, 14_000],
-                "end_ms": 15_000,
+                "transition_duration_ms": round(
+                    args.presentation_transition_seconds * 1000
+                ),
+                "easing": "ease_in_out_cosine",
+                "start_ms": 8_500,
+                "fullscreen_ms": [
+                    round((8.5 + args.presentation_transition_seconds) * 1000),
+                    round((15.5 - args.presentation_transition_seconds) * 1000),
+                ],
+                "end_ms": 15_500,
             },
             "desk_foreground_occlusion_y": DESK_TOP,
+            "desk_character_overlap_px": DESK_OCCLUSION_OVERLAP,
             "camera_crop": {
                 "width": CAMERA_WIDTH,
                 "height": CAMERA_HEIGHT,

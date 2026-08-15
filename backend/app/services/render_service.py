@@ -595,12 +595,22 @@ class RenderService:
         if not asset_id:
             return piece
         state = "rear_screen"
+        active_keyframe: dict | None = None
         for keyframe in sorted(
             (item for item in presentation.get("keyframes", []) if isinstance(item, dict)),
             key=lambda item: int(item.get("time_ms") or 0),
         ):
             if int(keyframe.get("time_ms") or 0) <= piece_start_ms:
                 state = str(keyframe.get("state") or state)
+                active_keyframe = keyframe
+        transition_duration_ms = self._optional_int(
+            (active_keyframe or {}).get("transition_duration_ms")
+        )
+        if transition_duration_ms is None:
+            transition_duration_ms = self._optional_int(
+                presentation.get("transition_duration_ms")
+            )
+        transition_duration_ms = max(0, min(5_000, transition_duration_ms or 0))
         content_source_start_ms = int(content.get("source_in_ms") or 0) + max(
             0, piece_start_ms - int(content.get("start_ms") or 0)
         )
@@ -626,6 +636,7 @@ class RenderService:
                 "visual_role": "broll",
                 "visual_layers": [layer],
                 "camera_transition": "dissolve",
+                "transition_duration_ms": transition_duration_ms,
                 "direction": {
                     **(piece.get("direction") or {}),
                     "action": "dissolve",
@@ -650,6 +661,7 @@ class RenderService:
             "wall_screen_visual_asset_id": asset_id,
             "visual_layers": [*base_layers, layer],
             "camera_transition": "broll_insert",
+            "transition_duration_ms": transition_duration_ms,
             "broll_playback": {
                 "state": state,
                 "content_clip_id": content.get("id"),
@@ -1903,6 +1915,9 @@ class RenderService:
             "terminal_fade_out_ms": max(0, terminal_fade_out_ms),
             **policy,
         }
+        requested_duration_ms = self._optional_int(segment.get("transition_duration_ms"))
+        if requested_duration_ms is not None and transition_policy["cross_scene"]:
+            transition_policy["duration_ms"] = max(0, min(5_000, requested_duration_ms))
         if source_range_timing_locked or terminal_clip:
             transition_policy.update(
                 {

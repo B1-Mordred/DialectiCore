@@ -37,7 +37,7 @@ retained when supplied but are optional and never block editing or rendering.
 - [x] (2026-08-15 08:21Z) Added backward-compatible `episode_timeline.v3` parallel dialogue, character, camera, B-roll content, B-roll presentation, and caption clips while retaining legacy segment-index tracks.
 - [x] (2026-08-15 08:22Z) Extended the Timeline Editor with stacked lanes and accessible numeric clip start, end, and source-in controls; all 102 frontend tests and the production build pass.
 - [x] (2026-08-15 08:24Z) Added render-boundary materialization that preserves uninterrupted stored dialogue segments and continuous B-roll source time across rear-screen/fullscreen/rear-screen changes.
-- [ ] (2026-08-15 08:38Z) Produced and Codex-reviewed the 24-second six-speaker integrated qualification, registered it in a separate episode with immutable master assets, and verified real browser playback; human approval remains pending before full-episode production.
+- [ ] (2026-08-15 09:27Z) Produced revision 2 of the 24-second six-speaker integrated qualification after human review rejected revision 1 for undersized/floating DeepSeek geometry, a rear-screen leak at the torso/desk seam, and abrupt B-roll presentation transitions. Revision 2 is registered and browser-playable; human approval remains pending before full-episode production.
 - [ ] Regenerate, QC, UI-approve, package, and recovery-test the complete v2 episode without replacing v1.
 - [ ] Commit and push intentional checkpoints, obtain green CI, verify deployed/local/remote source provenance, and record exact v2 artifacts and limitations.
 
@@ -135,6 +135,20 @@ retained when supplied but are optional and never block editing or rendering.
   exact checksum plus a download link.
   Evidence: Playwright loaded the player at 1280x720, reported ready state 4,
   and advanced playback to 1.14 seconds.
+- Observation: DeepSeek's accepted detector-safe input has a 640px canvas and
+  a 414px alpha body, while the other normalized inputs have 1280px canvases
+  and roughly 1024px alpha bodies. Scaling every canvas to 330px made
+  DeepSeek's rendered torso about 20 percent shorter even though its top edge
+  was raised.
+  Evidence: deterministic FFmpeg alpha bounds and
+  `test_character_layout_scales_deepseek_and_anchors_every_matte_behind_desk`.
+- Observation: the first qualification's blend expression used FFmpeg `T`,
+  which inherited the seeked B-roll timestamp and could evaluate the transition
+  as already complete. This was the cause of the apparently instantaneous
+  studio/fullscreen changes.
+  Evidence: isolated DeepSeek segment frames before and after changing the
+  expression to the segment-local frame counter `N`; revision 2 shows studio,
+  intermediate blend, and fullscreen frames over two seconds.
 
 ## Decision Log
 
@@ -194,6 +208,20 @@ retained when supplied but are optional and never block editing or rendering.
   Rationale: this exposes real UI playback and human gating while preserving
   the v1 episode, render status, bytes, and SHA-256 unchanged.
   Date/Author: 2026-08-15 / Codex.
+- Decision: scale DeepSeek's detector-safe composition canvas to 414px while
+  keeping the other five at 330px, then anchor every alpha baseline 12px behind
+  the foreground desk rather than positioning characters from a shared canvas
+  top.
+  Rationale: this equalizes useful body height, keeps the improved detector-safe
+  animation, and removes the transparent torso/desk strip without painting over
+  faces or shoulders.
+  Date/Author: 2026-08-15 / user review and Codex.
+- Decision: make B-roll presentation transition duration a bounded 0-5000ms
+  clip property, default it to 1500ms in generated timelines, and use a 2000ms
+  cosine-eased transition in qualification revision 2.
+  Rationale: transition pace is an editorial choice and must not be embedded as
+  an accidental fixed FFmpeg timestamp behavior.
+  Date/Author: 2026-08-15 / user review and Codex.
 
 ## Outcomes & Retrospective
 
@@ -203,6 +231,12 @@ qualification are implemented. The qualification is visible and playable in
 episode `05540416-dd18-4f6e-aa33-5bc683b06b9f`; render asset
 `e44ff4b5-a286-4e60-9fd9-bc5b8cbfe9ed` has SHA-256
 `51de78de7623c598ed21c52aa02a1544ebe57793129cc2e3caa35f1ebfb0cd3e`.
+Human review found revision 1 materially improved but rejected it for DeepSeek
+scale/contact, the torso/desk B-roll seam, and transition speed. Revision 2
+supersedes the first qualification without overwriting it. Its render asset is
+`e27872fe-e838-42a1-9621-848af0a2cd87`, approval is
+`7b53dd3f-d558-4483-95a9-8550f6bd883c`, and SHA-256 is
+`647b732587ef841d1d88e71d186729d3f0b733fd364a42ad562c79f2b15bf29b`.
 The v1 final remains completed with SHA-256
 `1837df46318eba0bd0a21dc60c0d97b5c0236423476401058f3bdfd0278b3218`.
 Full v2 episode production is intentionally gated on the pending human review,
@@ -438,3 +472,10 @@ Plan update note (2026-08-15 07:10Z): Recorded the six-character v1 quality
 baseline, current B1's lossless RGBA PNG acceptance, removal of the historical
 JPEG transport workaround, focused passing tests, and the measured 192x166 face
 resolution and blocking spread that the high-resolution prototype must beat.
+
+Plan update note (2026-08-15 09:27Z): Recorded the human review of qualification
+revision 1 and the resulting revision 2 corrections. DeepSeek now uses useful
+alpha-body scale rather than equal canvas scale, every character overlaps the
+foreground desk by 12px, and B-roll presentation transitions use a bounded,
+editable duration and segment-local eased clock. Revision 1 remains immutable
+and superseded; full episode production remains blocked on review of revision 2.

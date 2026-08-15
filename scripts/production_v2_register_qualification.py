@@ -40,24 +40,23 @@ def main() -> int:
     initialize_database(engine)
     repo = EpisodeRepository(create_session_factory(engine))
     source = repo.get(SOURCE_EPISODE_ID)
-    marker = "dialecticore.production_v2.qualification.v1"
+    marker = "dialecticore.production_v2.qualification.v2"
     qualification_title = f"{source.definition.title} — Production v2 qualification"
     episodes = list(repo.list_compact())
     existing = next(
         (
             episode
             for episode in episodes
-            if episode.workflow_control.get("production_v2_qualification", {}).get("schema_version")
-            == marker
+            if str(
+                episode.workflow_control.get("production_v2_qualification", {}).get(
+                    "schema_version", ""
+                )
+            ).startswith("dialecticore.production_v2.qualification.")
             and episode.workflow_control["production_v2_qualification"].get("source_episode_id")
             == str(SOURCE_EPISODE_ID)
         ),
         None,
     )
-    if existing is not None:
-        print(json.dumps({"episode_id": str(existing.id), "created": False}, indent=2))
-        return 0
-
     incomplete = next(
         (
             episode
@@ -68,7 +67,9 @@ def main() -> int:
         ),
         None,
     )
-    if incomplete is not None:
+    if existing is not None:
+        episode = repo.get(existing.id)
+    elif incomplete is not None:
         episode = repo.get(incomplete.id)
     else:
         definition = source.definition.model_copy(deep=True)
@@ -85,57 +86,107 @@ def main() -> int:
     master_manifest = json.loads(MASTER_MANIFEST_PATH.read_text())
     analysis = json.loads(ANIMATION_ANALYSIS_PATH.read_text())
     selection = analysis["selection"]
-
-    master_asset_ids: list[str] = []
-    for record in master_manifest["records"]:
-        participant_id = record["participant_id"]
-        selected_candidate = selection[participant_id]
-        source_path = ROOT / record["master"]["path"]
-        stored = object_store.put_bytes(
-            key=(f"production-v2/qualification/{episode.id}/seated-masters/{participant_id}.png"),
-            payload=source_path.read_bytes(),
-            content_type="image/png",
-        )
-        asset = Asset(
-            episode_id=episode.id,
-            asset_type=AssetType.image,
-            source_entity_type="participant_profile",
-            source_entity_id=participant_id,
-            storage_uri=stored.uri,
-            mime_type=stored.content_type,
-            width=record["geometry"]["canvas"]["width"],
-            height=record["geometry"]["canvas"]["height"],
-            checksum=stored.checksum,
-            status="completed",
-            generation_metadata={
-                "schema_version": record["schema_version"],
-                "visual_role": "studio_seated_character_v2_master",
-                "normalization_version": record["normalization_version"],
-                "geometry": record["geometry"],
-                "source": record["source"],
-                "enhancement": record["enhancement"],
-                "qc": record["qc"],
-                "v1_asset_id": record["v1_asset_id"],
-                "animation_input_policy": {
-                    "selected_candidate": selected_candidate,
-                    "reason": (
-                        "native_scale_face_detector_compatibility"
-                        if participant_id == "deepseek"
-                        else "enhanced_normalized_master"
-                    ),
-                },
-                "object_storage_path": str(stored.path),
-                "render_ready": True,
-                "immutable_qualification_asset": True,
-            },
-        )
-        episode.assets.append(asset)
-        master_asset_ids.append(str(asset.id))
-
     render_path = QUALIFICATION_ROOT / "production-v2-integrated-qualification.mp4"
     render_manifest = json.loads((QUALIFICATION_ROOT / "manifest.json").read_text())
+    render_checksum = render_manifest["output"]["sha256"]
+
+    prior_control = episode.workflow_control.get("production_v2_qualification", {})
+    prior_render_asset_id = str(prior_control.get("render_asset_id") or "")
+    prior_approval_id = str(prior_control.get("approval_id") or "")
+    if (
+        prior_control.get("schema_version") == marker
+        and any(
+            str(asset.id) == prior_render_asset_id and asset.checksum == render_checksum
+            for asset in episode.assets
+        )
+    ):
+        print(
+            json.dumps(
+                {
+                    "episode_id": str(episode.id),
+                    "render_asset_id": prior_render_asset_id,
+                    "approval_id": prior_approval_id,
+                    "created": False,
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    master_asset_ids = list(prior_control.get("master_asset_ids") or [])
+    if not master_asset_ids:
+        for record in master_manifest["records"]:
+            participant_id = record["participant_id"]
+            selected_candidate = selection[participant_id]
+            source_path = ROOT / record["master"]["path"]
+            stored = object_store.put_bytes(
+                key=(
+                    f"production-v2/qualification/{episode.id}/seated-masters/"
+                    f"{participant_id}.png"
+                ),
+                payload=source_path.read_bytes(),
+                content_type="image/png",
+            )
+            asset = Asset(
+                episode_id=episode.id,
+                asset_type=AssetType.image,
+                source_entity_type="participant_profile",
+                source_entity_id=participant_id,
+                storage_uri=stored.uri,
+                mime_type=stored.content_type,
+                width=record["geometry"]["canvas"]["width"],
+                height=record["geometry"]["canvas"]["height"],
+                checksum=stored.checksum,
+                status="completed",
+                generation_metadata={
+                    "schema_version": record["schema_version"],
+                    "visual_role": "studio_seated_character_v2_master",
+                    "normalization_version": record["normalization_version"],
+                    "geometry": record["geometry"],
+                    "source": record["source"],
+                    "enhancement": record["enhancement"],
+                    "qc": record["qc"],
+                    "v1_asset_id": record["v1_asset_id"],
+                    "animation_input_policy": {
+                        "selected_candidate": selected_candidate,
+                        "reason": (
+                            "native_scale_face_detector_compatibility"
+                            if participant_id == "deepseek"
+                            else "enhanced_normalized_master"
+                        ),
+                    },
+                    "object_storage_path": str(stored.path),
+                    "render_ready": True,
+                    "immutable_qualification_asset": True,
+                },
+            )
+            episode.assets.append(asset)
+            master_asset_ids.append(str(asset.id))
+
+    if prior_render_asset_id:
+        prior_render = next(
+            (asset for asset in episode.assets if str(asset.id) == prior_render_asset_id), None
+        )
+        if prior_render is not None:
+            prior_render.status = "replaced"
+            prior_render.generation_metadata["approval_status"] = "superseded"
+            prior_render.generation_metadata["superseded_by_revision"] = marker
+            prior_render.updated_at = datetime.now(UTC)
+    if prior_approval_id:
+        prior_approval = next(
+            (approval for approval in episode.approvals if str(approval.id) == prior_approval_id),
+            None,
+        )
+        if prior_approval is not None and prior_approval.decision == "pending":
+            prior_approval.decision = "rejected"
+            prior_approval.comment = (
+                "Superseded after human review: correct DeepSeek scale and desk contact, "
+                "remove rear-screen leakage, and slow B-roll presentation transitions."
+            )
+            prior_approval.user_id = "codex"
+
     stored_render = object_store.put_bytes(
-        key=f"production-v2/qualification/{episode.id}/integrated-qualification.mp4",
+        key=f"production-v2/qualification/{episode.id}/integrated-qualification-v2.mp4",
         payload=render_path.read_bytes(),
         content_type="video/mp4",
     )
@@ -184,6 +235,9 @@ def main() -> int:
         "master_asset_ids": master_asset_ids,
         "approval_id": str(approval.id),
         "status": "pending_review",
+        "revision": 2,
+        "supersedes_render_asset_id": prior_render_asset_id or None,
+        "supersedes_approval_id": prior_approval_id or None,
         "created_at": datetime.now(UTC).isoformat(),
     }
     episode.status = EpisodeStatus.ready
@@ -198,6 +252,12 @@ def main() -> int:
                 "render_checksum": render_asset.checksum,
                 "master_asset_ids": master_asset_ids,
                 "v1_assets_modified": False,
+                "supersedes_render_asset_id": prior_render_asset_id or None,
+                "review_corrections": [
+                    "deepseek_true_torso_scale",
+                    "desk_contact_occlusion_overlap",
+                    "configurable_eased_broll_transition",
+                ],
             },
         )
     )

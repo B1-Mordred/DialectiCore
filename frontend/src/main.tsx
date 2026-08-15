@@ -821,6 +821,7 @@ type TimelineTrackClip = {
   view?: string;
   action?: string;
   keyframes?: Array<Record<string, unknown>>;
+  transition_duration_ms?: number;
   [key: string]: unknown;
 };
 
@@ -23564,6 +23565,22 @@ function TimelineEditorPanel(props: {
                   value={Number(selectedClip.source_in_ms ?? 0)}
                 />
               </label>
+              {selectedTrackClip.trackName === "broll_presentation" ? (
+                <label className="field">
+                  <span>Transition duration ms</span>
+                  <input
+                    max={5000}
+                    min={0}
+                    onChange={(event) =>
+                      updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
+                        transition_duration_ms: Number(event.target.value),
+                      })
+                    }
+                    type="number"
+                    value={Number(selectedClip.transition_duration_ms ?? 1500)}
+                  />
+                </label>
+              ) : null}
               <button className="secondaryButton" onClick={() => setSelectedTrackClip(null)}>
                 Close clip editor
               </button>

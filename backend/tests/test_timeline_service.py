@@ -287,6 +287,11 @@ def test_seated_panel_timeline_cuts_to_composited_rear_screen_media(
     assert content["asset_id"] == str(wall_screen.id)
     assert content["audio_mode"] == "muted"
     assert presentation["content_clip_id"] == content["id"]
+    assert presentation["transition_duration_ms"] == 1_500
+    assert all(
+        keyframe["transition_duration_ms"] == 1_500
+        for keyframe in presentation["keyframes"]
+    )
     assert [keyframe["state"] for keyframe in presentation["keyframes"]] == [
         "rear_screen",
         "rear_screen",
@@ -322,6 +327,39 @@ def test_parallel_directing_tracks_are_normalized_and_legacy_tracks_survive() ->
     assert [clip["id"] for clip in normalized["broll_content"]] == ["clip-1", "clip-2"]
     assert normalized["broll_content"][1]["duration_ms"] == 2_000
     assert normalized["broll_content"][1]["source_out_ms"] == 2_400
+
+
+def test_parallel_track_transition_duration_is_normalized_and_bounded() -> None:
+    service = TimelineService(Settings())
+
+    normalized = service._normalize_timeline_tracks(
+        {
+            "broll_presentation": [
+                {
+                    "id": "presentation-1",
+                    "start_ms": 1_000,
+                    "end_ms": 4_000,
+                    "transition_duration_ms": "1750",
+                }
+            ]
+        }
+    )
+
+    assert normalized["broll_presentation"][0]["transition_duration_ms"] == 1_750
+
+    with pytest.raises(ValueError, match="transition duration must be 0-5000ms"):
+        service._normalize_timeline_tracks(
+            {
+                "broll_presentation": [
+                    {
+                        "id": "presentation-1",
+                        "start_ms": 1_000,
+                        "end_ms": 4_000,
+                        "transition_duration_ms": 5_001,
+                    }
+                ]
+            }
+        )
 
     with pytest.raises(ValueError, match="clip IDs must be unique"):
         service._normalize_timeline_tracks(
