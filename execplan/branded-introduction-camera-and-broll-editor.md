@@ -35,7 +35,7 @@ the managed B1 scheduler API.
 - [x] (2026-08-15 16:33Z) Ran focused and full backend/frontend tests, production builds, and real-browser checks of branding, source eligibility, linked duplication/undo, camera plates, timeline validity, and pending approval visibility.
 - [x] (2026-08-15 16:32Z) Created immutable branded-introduction timeline `2087a218-3b0a-494d-b2d5-e920650b018b`, qualification render `ab9fd6ab-84ee-432e-9fc2-3a103210f81e`, and thumbnail `51b3af24-a4aa-4f6c-a2ff-d0d5e5c95cf9`; stopped at approval `7eee0eb7-d705-410d-b5fc-2f77f1320cdd` before final/package work.
 - [ ] After human approval, create and validate the new full preview/final/package/manifest/recovery chain without live publication.
-- [ ] Commit and push the implementation, watch CI to completion, and verify local and remote source revisions match.
+- [x] (2026-08-15 16:42Z) Committed and pushed implementation `775ba775c113ab073da42a91ed2d4c8a5bac072c`; CI run `31896047758` passed Compose, frontend, backend lint, and all tests. A documentation-only follow-up records this terminal evidence.
 
 ## Surprises & Discoveries
 
@@ -327,3 +327,6 @@ guard discovered during compositor validation.
 Plan change note (2026-08-15 16:34Z): recorded complete automated/browser evidence,
 the two preserved rejected qualification attempts, the corrected immutable render
 and thumbnail, and the active human-review gate.
+
+Plan change note (2026-08-15 16:42Z): recorded successful source publication and
+GitHub CI completion for implementation commit `775ba775`.
