@@ -1,0 +1,76 @@
+title: "Will AI replace software developers?"
+topic:
+  central_question: "How will AI change professional software development?"
+  scope:
+    - productivity
+    - employment
+    - software_quality
+  required_dimensions:
+    - short_term_effects
+    - long_term_effects
+    - risks
+    - opportunities
+  exclusions:
+    - artificial_consciousness
+format:
+  show_format_id: analytical_panel_v1
+  target_duration_minutes: 4
+  permitted_deviation_percent: 15
+  participant_count: 6
+  host_control: medium
+  allow_interruptions: false
+  allow_follow_up_questions: true
+  maximum_monologue_seconds: 45
+  discussion_intensity: medium
+duration_allocation:
+  introduction: 0.10
+  opening_positions: 0.25
+  main_discussion: 0.35
+  challenges: 0.15
+  closing_statements: 0.10
+  host_summary: 0.05
+languages:
+  source_language: en
+  outputs:
+    - language: en
+      mode: canonical
+  semantic_fidelity_threshold: 0.92
+  allow_new_claims: false
+participants:
+  - participant_profile_id: chatgpt
+    role: moderator
+  - participant_profile_id: claude
+    role: panelist
+  - participant_profile_id: deepseek
+    role: panelist
+  - participant_profile_id: grok
+    role: panelist
+  - participant_profile_id: gemini
+    role: panelist
+  - participant_profile_id: mistral
+    role: panelist
+research:
+  enabled: false
+  depth: standard
+  require_source_links: false
+  approval_required: false
+media:
+  aspect_ratio: "16:9"
+  width: 1920
+  height: 1080
+  fps: 30
+  visual_style: studio_realistic
+  camera_style: multi_camera
+  subtitle_mode: selectable
+  generate_broll: false
+  generate_citation_cards: false
+workflow:
+  mode: transcript_review
+  production_target: native_visual
+  retry_failed_assets: true
+  maximum_stage_retries: 3
+quality:
+  block_on_unsupported_high_impact_claims: true
+  block_on_missing_audio: false
+  block_on_sync_error_ms: 180
+  block_on_missing_subtitles: false

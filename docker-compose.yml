@@ -1,0 +1,537 @@
+x-dialecticore-env: &dialecticore-env
+  DIALECTICORE_DATABASE_URL: ${DIALECTICORE_DATABASE_URL-postgresql+psycopg://${POSTGRES_USER:-dialecticore}:${POSTGRES_PASSWORD:-dialecticore}@postgres:5432/${POSTGRES_DB:-dialecticore}}
+  DIALECTICORE_DATABASE_DRIVER: ${DIALECTICORE_DATABASE_DRIVER:-postgresql+psycopg}
+  DIALECTICORE_DATABASE_HOST: ${DIALECTICORE_DATABASE_HOST:-postgres}
+  DIALECTICORE_DATABASE_PORT: ${DIALECTICORE_DATABASE_PORT:-5432}
+  DIALECTICORE_DATABASE_NAME: ${DIALECTICORE_DATABASE_NAME:-dialecticore}
+  DIALECTICORE_DATABASE_USER: ${DIALECTICORE_DATABASE_USER:-dialecticore}
+  DIALECTICORE_DATABASE_PASSWORD_REFERENCE: ${DIALECTICORE_DATABASE_PASSWORD_REFERENCE:-}
+  DIALECTICORE_CORS_ALLOWED_ORIGINS: ${DIALECTICORE_CORS_ALLOWED_ORIGINS:-*}
+  DIALECTICORE_REDIS_URL: ${DIALECTICORE_REDIS_URL:-redis://redis:6379/0}
+  DIALECTICORE_REDIS_EVENT_FANOUT_ENABLED: ${DIALECTICORE_REDIS_EVENT_FANOUT_ENABLED:-false}
+  DIALECTICORE_REDIS_EVENT_CHANNEL: ${DIALECTICORE_REDIS_EVENT_CHANNEL:-dialecticore:system-events}
+  DIALECTICORE_REDIS_WORKER_SIGNAL_ENABLED: ${DIALECTICORE_REDIS_WORKER_SIGNAL_ENABLED:-false}
+  DIALECTICORE_REDIS_WORKER_SIGNAL_STREAM: ${DIALECTICORE_REDIS_WORKER_SIGNAL_STREAM:-dialecticore:worker-signals}
+  DIALECTICORE_REDIS_WORKER_SIGNAL_MAXLEN: ${DIALECTICORE_REDIS_WORKER_SIGNAL_MAXLEN:-200}
+  DIALECTICORE_REDIS_TIMEOUT_SECONDS: ${DIALECTICORE_REDIS_TIMEOUT_SECONDS:-1}
+  DIALECTICORE_AUTH_ENABLED: ${DIALECTICORE_AUTH_ENABLED:-false}
+  DIALECTICORE_AUTH_API_KEY_REFERENCE: ${DIALECTICORE_AUTH_API_KEY_REFERENCE:-env:DIALECTICORE_API_KEY}
+  DIALECTICORE_AUTH_API_KEY_HEADER: ${DIALECTICORE_AUTH_API_KEY_HEADER:-x-dialecticore-api-key}
+  DIALECTICORE_AUTH_ROLE_HEADER: ${DIALECTICORE_AUTH_ROLE_HEADER:-x-dialecticore-role}
+  DIALECTICORE_AUTH_USER_HEADER: ${DIALECTICORE_AUTH_USER_HEADER:-x-dialecticore-user}
+  DIALECTICORE_AUTH_TRUSTED_IDENTITY_ENABLED: ${DIALECTICORE_AUTH_TRUSTED_IDENTITY_ENABLED:-false}
+  DIALECTICORE_AUTH_TRUSTED_IDENTITY_HEADER: ${DIALECTICORE_AUTH_TRUSTED_IDENTITY_HEADER:-x-forwarded-user}
+  DIALECTICORE_AUTH_TRUSTED_EMAIL_HEADER: ${DIALECTICORE_AUTH_TRUSTED_EMAIL_HEADER:-x-forwarded-email}
+  DIALECTICORE_AUTH_TRUSTED_GROUPS_HEADER: ${DIALECTICORE_AUTH_TRUSTED_GROUPS_HEADER:-x-forwarded-groups}
+  DIALECTICORE_AUTH_TRUSTED_GROUP_ROLE_MAP: ${DIALECTICORE_AUTH_TRUSTED_GROUP_ROLE_MAP:-}
+  DIALECTICORE_AUTH_TRUSTED_DEFAULT_ROLE: ${DIALECTICORE_AUTH_TRUSTED_DEFAULT_ROLE:-viewer}
+  DIALECTICORE_AUTH_PROVIDER_SESSION_ENABLED: ${DIALECTICORE_AUTH_PROVIDER_SESSION_ENABLED:-false}
+  DIALECTICORE_AUTH_PROVIDER_SESSION_INTROSPECTION_URL: ${DIALECTICORE_AUTH_PROVIDER_SESSION_INTROSPECTION_URL:-}
+  DIALECTICORE_AUTH_PROVIDER_SESSION_CLIENT_ID_REFERENCE: ${DIALECTICORE_AUTH_PROVIDER_SESSION_CLIENT_ID_REFERENCE:-}
+  DIALECTICORE_AUTH_PROVIDER_SESSION_CLIENT_SECRET_REFERENCE: ${DIALECTICORE_AUTH_PROVIDER_SESSION_CLIENT_SECRET_REFERENCE:-}
+  DIALECTICORE_AUTH_PROVIDER_SESSION_TOKEN_HEADER: ${DIALECTICORE_AUTH_PROVIDER_SESSION_TOKEN_HEADER:-authorization}
+  DIALECTICORE_AUTH_PROVIDER_SESSION_USER_CLAIM: ${DIALECTICORE_AUTH_PROVIDER_SESSION_USER_CLAIM:-sub}
+  DIALECTICORE_AUTH_PROVIDER_SESSION_GROUPS_CLAIM: ${DIALECTICORE_AUTH_PROVIDER_SESSION_GROUPS_CLAIM:-groups}
+  DIALECTICORE_AUTH_PROVIDER_SESSION_GROUP_ROLE_MAP: ${DIALECTICORE_AUTH_PROVIDER_SESSION_GROUP_ROLE_MAP:-}
+  DIALECTICORE_AUTH_PROVIDER_SESSION_DEFAULT_ROLE: ${DIALECTICORE_AUTH_PROVIDER_SESSION_DEFAULT_ROLE:-viewer}
+  DIALECTICORE_AUTH_PROVIDER_SESSION_TIMEOUT_SECONDS: ${DIALECTICORE_AUTH_PROVIDER_SESSION_TIMEOUT_SECONDS:-3}
+  DIALECTICORE_AUTH_PROVIDER_SESSION_REVOCATION_PATH: ${DIALECTICORE_AUTH_PROVIDER_SESSION_REVOCATION_PATH:-}
+  DIALECTICORE_AUTH_PROVIDER_SESSION_DECISION_LOG_PATH: ${DIALECTICORE_AUTH_PROVIDER_SESSION_DECISION_LOG_PATH:-}
+  DIALECTICORE_AUTH_PROVIDER_SESSION_DECISION_LOG_LIMIT: ${DIALECTICORE_AUTH_PROVIDER_SESSION_DECISION_LOG_LIMIT:-100}
+  DIALECTICORE_OBJECT_STORAGE_BACKEND: ${DIALECTICORE_OBJECT_STORAGE_BACKEND:-s3}
+  DIALECTICORE_OBJECT_STORAGE_ENDPOINT: ${DIALECTICORE_OBJECT_STORAGE_ENDPOINT:-http://minio:9000}
+  DIALECTICORE_OBJECT_STORAGE_BUCKET: ${DIALECTICORE_OBJECT_STORAGE_BUCKET:-dialecticore}
+  DIALECTICORE_OBJECT_STORAGE_LOCAL_PATH: ${DIALECTICORE_OBJECT_STORAGE_LOCAL_PATH:-/data/object-storage}
+  DIALECTICORE_OBJECT_STORAGE_REGION: ${DIALECTICORE_OBJECT_STORAGE_REGION:-us-east-1}
+  DIALECTICORE_OBJECT_STORAGE_ACCESS_KEY_REFERENCE: ${DIALECTICORE_OBJECT_STORAGE_ACCESS_KEY_REFERENCE:-env:MINIO_ROOT_USER}
+  DIALECTICORE_OBJECT_STORAGE_SECRET_KEY_REFERENCE: ${DIALECTICORE_OBJECT_STORAGE_SECRET_KEY_REFERENCE:-env:MINIO_ROOT_PASSWORD}
+  DIALECTICORE_OBJECT_STORAGE_FORCE_PATH_STYLE: ${DIALECTICORE_OBJECT_STORAGE_FORCE_PATH_STYLE:-true}
+  DIALECTICORE_OBJECT_STORAGE_AUTO_CREATE_BUCKET: ${DIALECTICORE_OBJECT_STORAGE_AUTO_CREATE_BUCKET:-true}
+  DIALECTICORE_RUNTIME_STATE_PATH: /data/runtime-state
+  DIALECTICORE_BACKUP_PATH: /data/backups
+  DIALECTICORE_WORKER_POLL_INTERVAL_SECONDS: ${DIALECTICORE_WORKER_POLL_INTERVAL_SECONDS:-15}
+  DIALECTICORE_WORKER_SYNC_BATCH_LIMIT: ${DIALECTICORE_WORKER_SYNC_BATCH_LIMIT:-50}
+  DIALECTICORE_WORKER_HEARTBEAT_TTL_SECONDS: ${DIALECTICORE_WORKER_HEARTBEAT_TTL_SECONDS:-90}
+  DIALECTICORE_WORKER_LEASE_TTL_SECONDS: ${DIALECTICORE_WORKER_LEASE_TTL_SECONDS:-45}
+  DIALECTICORE_WORKER_RUNTIME_STATE_RETENTION_SECONDS: ${DIALECTICORE_WORKER_RUNTIME_STATE_RETENTION_SECONDS:-86400}
+  DIALECTICORE_RUNTIME_PATH_MIN_FREE_BYTES: ${DIALECTICORE_RUNTIME_PATH_MIN_FREE_BYTES:-0}
+  DIALECTICORE_HEALTHCHECK_URL: ${DIALECTICORE_HEALTHCHECK_URL:-http://127.0.0.1:8000/api/v1/system/health}
+  DIALECTICORE_HEALTHCHECK_TIMEOUT_SECONDS: ${DIALECTICORE_HEALTHCHECK_TIMEOUT_SECONDS:-5}
+  DIALECTICORE_HEALTHCHECK_ALLOWED_STATUSES: ${DIALECTICORE_HEALTHCHECK_ALLOWED_STATUSES:-healthy,degraded}
+  DIALECTICORE_TEMPORAL_BACKEND_MODE: ${DIALECTICORE_TEMPORAL_BACKEND_MODE:-local}
+  DIALECTICORE_TEMPORAL_BACKEND_ADDRESS: ${DIALECTICORE_TEMPORAL_BACKEND_ADDRESS:-temporal:7233}
+  DIALECTICORE_TEMPORAL_BACKEND_TLS_ENABLED: ${DIALECTICORE_TEMPORAL_BACKEND_TLS_ENABLED:-false}
+  DIALECTICORE_TEMPORAL_BACKEND_WORKER_ENABLED: ${DIALECTICORE_TEMPORAL_BACKEND_WORKER_ENABLED:-false}
+  DIALECTICORE_TEMPORAL_BACKEND_CONNECT_TIMEOUT_SECONDS: ${DIALECTICORE_TEMPORAL_BACKEND_CONNECT_TIMEOUT_SECONDS:-1}
+  DIALECTICORE_TEMPORAL_NAMESPACE: ${DIALECTICORE_TEMPORAL_NAMESPACE:-default}
+  DIALECTICORE_TEMPORAL_TASK_QUEUE: ${DIALECTICORE_TEMPORAL_TASK_QUEUE:-production}
+  DIALECTICORE_TEMPORAL_SIGNAL_TRANSPORT_ENABLED: ${DIALECTICORE_TEMPORAL_SIGNAL_TRANSPORT_ENABLED:-false}
+  DIALECTICORE_TEMPORAL_SIGNAL_ENDPOINT: ${DIALECTICORE_TEMPORAL_SIGNAL_ENDPOINT:-}
+  DIALECTICORE_TEMPORAL_SIGNAL_TIMEOUT_SECONDS: ${DIALECTICORE_TEMPORAL_SIGNAL_TIMEOUT_SECONDS:-3}
+  DIALECTICORE_WORKFLOW_STAGE_RETRY_MAX_ATTEMPTS: ${DIALECTICORE_WORKFLOW_STAGE_RETRY_MAX_ATTEMPTS:-3}
+  DIALECTICORE_WORKFLOW_STAGE_RETRY_BACKOFF_SECONDS: ${DIALECTICORE_WORKFLOW_STAGE_RETRY_BACKOFF_SECONDS:-60}
+  DIALECTICORE_PUBLISHER_AUTOMATED_LIVE_ENABLED: ${DIALECTICORE_PUBLISHER_AUTOMATED_LIVE_ENABLED:-false}
+  DIALECTICORE_AUDIO_LOUDNESS_TARGET_LUFS: ${DIALECTICORE_AUDIO_LOUDNESS_TARGET_LUFS:--16}
+  DIALECTICORE_AUDIO_LOUDNESS_TRUE_PEAK_LIMIT_DBTP: ${DIALECTICORE_AUDIO_LOUDNESS_TRUE_PEAK_LIMIT_DBTP:--1.5}
+  DIALECTICORE_AUDIO_LOUDNESS_RANGE_TARGET_LU: ${DIALECTICORE_AUDIO_LOUDNESS_RANGE_TARGET_LU:-11}
+  DIALECTICORE_MODEL_PROVIDER: ${DIALECTICORE_MODEL_PROVIDER:-mock}
+  DIALECTICORE_WORDS_PER_SECOND: ${DIALECTICORE_WORDS_PER_SECOND:-2.45}
+  DIALECTICORE_RESEARCH_RETRIEVAL_TIMEOUT_SECONDS: ${DIALECTICORE_RESEARCH_RETRIEVAL_TIMEOUT_SECONDS:-8}
+  DIALECTICORE_RESEARCH_RETRIEVAL_MAX_BYTES: ${DIALECTICORE_RESEARCH_RETRIEVAL_MAX_BYTES:-1000000}
+  DIALECTICORE_RESEARCH_DISCOVERY_ENABLED: ${DIALECTICORE_RESEARCH_DISCOVERY_ENABLED:-false}
+  DIALECTICORE_RESEARCH_DISCOVERY_URL_TEMPLATE: ${DIALECTICORE_RESEARCH_DISCOVERY_URL_TEMPLATE:-}
+  DIALECTICORE_RESEARCH_DISCOVERY_MAX_QUERIES: ${DIALECTICORE_RESEARCH_DISCOVERY_MAX_QUERIES:-4}
+  DIALECTICORE_RESEARCH_DISCOVERY_MAX_RESULTS_PER_QUERY: ${DIALECTICORE_RESEARCH_DISCOVERY_MAX_RESULTS_PER_QUERY:-5}
+  DIALECTICORE_RESEARCH_ADVANCED_EXTRACTION_ENABLED: ${DIALECTICORE_RESEARCH_ADVANCED_EXTRACTION_ENABLED:-false}
+  DIALECTICORE_RESEARCH_ADVANCED_EXTRACTION_URL: ${DIALECTICORE_RESEARCH_ADVANCED_EXTRACTION_URL:-}
+  DIALECTICORE_RESEARCH_ADVANCED_EXTRACTION_TIMEOUT_SECONDS: ${DIALECTICORE_RESEARCH_ADVANCED_EXTRACTION_TIMEOUT_SECONDS:-15}
+  DIALECTICORE_RESEARCH_ADVANCED_EXTRACTION_MAX_SOURCES: ${DIALECTICORE_RESEARCH_ADVANCED_EXTRACTION_MAX_SOURCES:-8}
+  DIALECTICORE_RESEARCH_ADVANCED_EXTRACTION_MAX_CLAIMS_PER_SOURCE: ${DIALECTICORE_RESEARCH_ADVANCED_EXTRACTION_MAX_CLAIMS_PER_SOURCE:-6}
+  DIALECTICORE_PRIMER_MEDIA_WEB_SEARCH_ENABLED: ${DIALECTICORE_PRIMER_MEDIA_WEB_SEARCH_ENABLED:-true}
+  DIALECTICORE_PRIMER_MEDIA_WEB_SEARCH_MAX_QUERIES: ${DIALECTICORE_PRIMER_MEDIA_WEB_SEARCH_MAX_QUERIES:-3}
+  DIALECTICORE_PRIMER_MEDIA_WEB_SEARCH_MAX_RESULTS_PER_QUERY: ${DIALECTICORE_PRIMER_MEDIA_WEB_SEARCH_MAX_RESULTS_PER_QUERY:-8}
+  DIALECTICORE_PRIMER_MEDIA_PLATFORM_SEARCH_ENABLED: ${DIALECTICORE_PRIMER_MEDIA_PLATFORM_SEARCH_ENABLED:-true}
+  DIALECTICORE_PRIMER_MEDIA_PLATFORM_SEARCH_RESULTS_PER_QUERY: ${DIALECTICORE_PRIMER_MEDIA_PLATFORM_SEARCH_RESULTS_PER_QUERY:-3}
+  MINIO_ROOT_USER: ${MINIO_ROOT_USER:-dialecticore}
+  MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me-in-production}
+  DIALECTICORE_API_KEY: ${DIALECTICORE_API_KEY:-change-me-before-enabling-auth}
+
+x-api-ready: &api-ready
+  production-api:
+    condition: service_healthy
+
+x-worker-healthcheck: &worker-healthcheck
+  test: ["CMD", "python", "-m", "app.worker_healthcheck"]
+  interval: ${DIALECTICORE_WORKER_HEALTHCHECK_INTERVAL:-30s}
+  timeout: ${DIALECTICORE_WORKER_HEALTHCHECK_TIMEOUT:-6s}
+  retries: ${DIALECTICORE_WORKER_HEALTHCHECK_RETRIES:-3}
+  start_period: ${DIALECTICORE_WORKER_HEALTHCHECK_START_PERIOD:-30s}
+
+x-bounded-json-logging: &bounded-json-logging
+  logging:
+    driver: json-file
+    options:
+      max-size: ${DIALECTICORE_DOCKER_LOG_MAX_SIZE:-10m}
+      max-file: "${DIALECTICORE_DOCKER_LOG_MAX_FILE:-5}"
+
+x-process-resource-limits: &process-resource-limits
+  cpus: ${DIALECTICORE_DOCKER_CPU_LIMIT:-2.0}
+  mem_limit: ${DIALECTICORE_DOCKER_MEMORY_LIMIT:-2g}
+  memswap_limit: ${DIALECTICORE_DOCKER_MEMORY_SWAP_LIMIT:-2g}
+  pids_limit: ${DIALECTICORE_DOCKER_PIDS_LIMIT:-512}
+  ulimits:
+    nofile:
+      soft: ${DIALECTICORE_DOCKER_NOFILE_SOFT_LIMIT:-65536}
+      hard: ${DIALECTICORE_DOCKER_NOFILE_HARD_LIMIT:-65536}
+
+x-python-runtime-hardening: &python-runtime-hardening
+  <<: [*bounded-json-logging, *process-resource-limits]
+  init: true
+  restart: unless-stopped
+  stop_grace_period: ${DIALECTICORE_DOCKER_STOP_GRACE_PERIOD:-60s}
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:rw,nosuid,nodev,size=${DIALECTICORE_DOCKER_PYTHON_TMPFS_SIZE:-512m}
+
+x-web-runtime-hardening: &web-runtime-hardening
+  <<: [*bounded-json-logging, *process-resource-limits]
+  init: true
+  restart: unless-stopped
+  stop_grace_period: ${DIALECTICORE_DOCKER_STOP_GRACE_PERIOD:-60s}
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:rw,nosuid,nodev,size=${DIALECTICORE_DOCKER_WEB_TMPFS_SIZE:-64m}
+
+x-infrastructure-runtime-hardening: &infrastructure-runtime-hardening
+  <<: [*bounded-json-logging, *process-resource-limits]
+  init: true
+  pull_policy: missing
+  restart: unless-stopped
+  stop_grace_period: ${DIALECTICORE_DOCKER_STOP_GRACE_PERIOD:-60s}
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  web-ui:
+    <<: *web-runtime-hardening
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: ${DIALECTICORE_WEB_API_BASE_URL:-}
+        VITE_DIALECTICORE_ROLE: ${DIALECTICORE_WEB_ROLE:-producer}
+        VITE_DIALECTICORE_USER: ${DIALECTICORE_WEB_USER:-web-ui}
+    ports:
+      - "${DIALECTICORE_WEB_BIND_ADDRESS:-127.0.0.1}:5173:8080"
+    depends_on:
+      <<: *api-ready
+    networks:
+      - edge
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080 >/dev/null 2>&1 || exit 1"]
+      interval: ${DIALECTICORE_WEB_HEALTHCHECK_INTERVAL:-10s}
+      timeout: ${DIALECTICORE_WEB_HEALTHCHECK_TIMEOUT:-5s}
+      retries: ${DIALECTICORE_WEB_HEALTHCHECK_RETRIES:-6}
+      start_period: ${DIALECTICORE_WEB_HEALTHCHECK_START_PERIOD:-10s}
+
+  production-api:
+    <<: *python-runtime-hardening
+    build:
+      context: .
+      dockerfile: Dockerfile.production-api
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *dialecticore-env
+    ports:
+      - "${DIALECTICORE_API_BIND_ADDRESS:-127.0.0.1}:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - object-storage:/data/object-storage
+      - runtime-state:/data/runtime-state
+      - backups:/data/backups
+    networks:
+      - edge
+      - backend
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.healthcheck"]
+      interval: ${DIALECTICORE_API_HEALTHCHECK_INTERVAL:-10s}
+      timeout: ${DIALECTICORE_API_HEALTHCHECK_TIMEOUT:-6s}
+      retries: ${DIALECTICORE_API_HEALTHCHECK_RETRIES:-12}
+      start_period: ${DIALECTICORE_API_HEALTHCHECK_START_PERIOD:-20s}
+
+  temporal:
+    <<: *infrastructure-runtime-hardening
+    image: ${DIALECTICORE_TEMPORAL_IMAGE:-temporalio/auto-setup:1.25}
+    environment:
+      DB: postgresql
+      DB_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-dialecticore}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-dialecticore}
+      POSTGRES_SEEDS: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "127.0.0.1:7233", "--command-timeout", "5s"]
+      interval: ${DIALECTICORE_TEMPORAL_HEALTHCHECK_INTERVAL:-10s}
+      timeout: ${DIALECTICORE_TEMPORAL_HEALTHCHECK_TIMEOUT:-6s}
+      retries: ${DIALECTICORE_TEMPORAL_HEALTHCHECK_RETRIES:-12}
+      start_period: ${DIALECTICORE_TEMPORAL_HEALTHCHECK_START_PERIOD:-20s}
+
+  temporal-ui:
+    <<: *infrastructure-runtime-hardening
+    profiles:
+      - ops-ui
+    image: ${DIALECTICORE_TEMPORAL_UI_IMAGE:-temporalio/ui:2.31.2}
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    ports:
+      - "${DIALECTICORE_TEMPORAL_UI_BIND_ADDRESS:-127.0.0.1}:8088:8080"
+    depends_on:
+      temporal:
+        condition: service_healthy
+    networks:
+      - edge
+      - backend
+
+  workflow-worker:
+    <<: *python-runtime-hardening
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *dialecticore-env
+      DIALECTICORE_WORKER_ROLE: workflow-worker
+    depends_on:
+      <<: *api-ready
+    volumes:
+      - object-storage:/data/object-storage
+      - runtime-state:/data/runtime-state
+    networks:
+      - backend
+    healthcheck: *worker-healthcheck
+
+  temporal-worker:
+    <<: *python-runtime-hardening
+    profiles:
+      - temporal-external
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *dialecticore-env
+      DIALECTICORE_WORKER_ROLE: temporal-worker
+    depends_on:
+      temporal:
+        condition: service_healthy
+      production-api:
+        condition: service_healthy
+    volumes:
+      - object-storage:/data/object-storage
+      - runtime-state:/data/runtime-state
+    networks:
+      - backend
+    healthcheck: *worker-healthcheck
+
+  discussion-worker:
+    <<: *python-runtime-hardening
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *dialecticore-env
+      DIALECTICORE_WORKER_ROLE: discussion-worker
+    depends_on:
+      <<: *api-ready
+    volumes:
+      - runtime-state:/data/runtime-state
+    networks:
+      - backend
+    healthcheck: *worker-healthcheck
+
+  research-worker:
+    <<: *python-runtime-hardening
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *dialecticore-env
+      DIALECTICORE_WORKER_ROLE: research-worker
+    depends_on:
+      <<: *api-ready
+    volumes:
+      - object-storage:/data/object-storage
+      - runtime-state:/data/runtime-state
+    networks:
+      - backend
+    healthcheck: *worker-healthcheck
+
+  localization-worker:
+    <<: *python-runtime-hardening
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *dialecticore-env
+      DIALECTICORE_WORKER_ROLE: localization-worker
+    depends_on:
+      <<: *api-ready
+    volumes:
+      - runtime-state:/data/runtime-state
+    networks:
+      - backend
+    healthcheck: *worker-healthcheck
+
+  voicebox-adapter:
+    <<: *python-runtime-hardening
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *dialecticore-env
+      DIALECTICORE_WORKER_ROLE: voicebox-adapter
+    depends_on:
+      <<: *api-ready
+    volumes:
+      - object-storage:/data/object-storage
+      - runtime-state:/data/runtime-state
+    networks:
+      - backend
+    healthcheck: *worker-healthcheck
+
+  comfyui-adapter:
+    <<: *python-runtime-hardening
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *dialecticore-env
+      DIALECTICORE_WORKER_ROLE: comfyui-adapter
+    depends_on:
+      <<: *api-ready
+    volumes:
+      - object-storage:/data/object-storage
+      - runtime-state:/data/runtime-state
+    networks:
+      - backend
+    healthcheck: *worker-healthcheck
+
+  timeline-worker:
+    <<: *python-runtime-hardening
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *dialecticore-env
+      DIALECTICORE_WORKER_ROLE: timeline-worker
+    depends_on:
+      <<: *api-ready
+    volumes:
+      - object-storage:/data/object-storage
+      - runtime-state:/data/runtime-state
+    networks:
+      - backend
+    healthcheck: *worker-healthcheck
+
+  render-worker:
+    <<: *python-runtime-hardening
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *dialecticore-env
+      DIALECTICORE_WORKER_ROLE: render-worker
+    depends_on:
+      <<: *api-ready
+    volumes:
+      - object-storage:/data/object-storage
+      - runtime-state:/data/runtime-state
+    networks:
+      - backend
+    healthcheck: *worker-healthcheck
+
+  qc-worker:
+    <<: *python-runtime-hardening
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *dialecticore-env
+      DIALECTICORE_WORKER_ROLE: qc-worker
+    depends_on:
+      <<: *api-ready
+    volumes:
+      - object-storage:/data/object-storage
+      - runtime-state:/data/runtime-state
+    networks:
+      - backend
+    healthcheck: *worker-healthcheck
+
+  publishing-worker:
+    <<: *python-runtime-hardening
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *dialecticore-env
+      DIALECTICORE_WORKER_ROLE: publishing-worker
+    depends_on:
+      <<: *api-ready
+    volumes:
+      - object-storage:/data/object-storage
+      - runtime-state:/data/runtime-state
+    networks:
+      - backend
+    healthcheck: *worker-healthcheck
+
+  postgres:
+    <<: *infrastructure-runtime-hardening
+    image: ${DIALECTICORE_POSTGRES_IMAGE:-postgres:16}
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dialecticore}
+      POSTGRES_USER: ${POSTGRES_USER:-dialecticore}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dialecticore}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dialecticore}"]
+      interval: ${DIALECTICORE_POSTGRES_HEALTHCHECK_INTERVAL:-10s}
+      timeout: ${DIALECTICORE_POSTGRES_HEALTHCHECK_TIMEOUT:-5s}
+      retries: ${DIALECTICORE_POSTGRES_HEALTHCHECK_RETRIES:-5}
+
+  redis:
+    <<: *infrastructure-runtime-hardening
+    image: ${DIALECTICORE_REDIS_IMAGE:-redis:7-alpine}
+    volumes:
+      - redis-data:/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: ${DIALECTICORE_REDIS_HEALTHCHECK_INTERVAL:-10s}
+      timeout: ${DIALECTICORE_REDIS_HEALTHCHECK_TIMEOUT:-5s}
+      retries: ${DIALECTICORE_REDIS_HEALTHCHECK_RETRIES:-5}
+
+  minio:
+    <<: *infrastructure-runtime-hardening
+    image: ${DIALECTICORE_MINIO_IMAGE:-minio/minio:RELEASE.2025-07-23T15-54-02Z}
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-dialecticore}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me-in-production}
+    ports:
+      - "${DIALECTICORE_MINIO_BIND_ADDRESS:-127.0.0.1}:9000:9000"
+    volumes:
+      - minio-data:/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null || exit 1"]
+      interval: ${DIALECTICORE_MINIO_HEALTHCHECK_INTERVAL:-10s}
+      timeout: ${DIALECTICORE_MINIO_HEALTHCHECK_TIMEOUT:-5s}
+      retries: ${DIALECTICORE_MINIO_HEALTHCHECK_RETRIES:-12}
+      start_period: ${DIALECTICORE_MINIO_HEALTHCHECK_START_PERIOD:-10s}
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  object-storage:
+  runtime-state:
+  backups:
+
+networks:
+  edge:
+  backend:

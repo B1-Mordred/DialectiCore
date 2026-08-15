@@ -1,0 +1,19 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+COPY pyproject.toml README.md alembic.ini ./
+COPY backend ./backend
+RUN pip install --no-cache-dir .
+RUN groupadd --system --gid 10001 dialecticore \
+    && useradd --system --uid 10001 --gid dialecticore --home-dir /app --no-create-home dialecticore \
+    && mkdir -p /data/object-storage /data/runtime-state /data/backups \
+    && chown -R dialecticore:dialecticore /app /data
+
+USER dialecticore
+CMD ["python", "-m", "app.workflows.worker_placeholder"]
