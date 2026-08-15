@@ -39,7 +39,7 @@ scheduling, and publication safety gates remain binding.
 - [x] (2026-08-14 22:05Z) Produced the current subtitle sidecar, non-black representative thumbnail, YouTube delivery package, compact production manifest, and mock dry-run publication record through persisted workflow APIs.
 - [x] (2026-08-15 04:20Z) Replayed the archived episode through the Web UI after restarting API, Web UI, render worker, and workflow worker; all five delivery artifacts were visible and downloadable with zero browser-console errors.
 - [x] (2026-08-15 05:16Z) Fixed mutable worker-state backup capture, moved large backup operations off the API event loop, passed 289 relevant tests, and validated a fresh 2.67 GB recovery archive covering 5,455 database records and all 660 selected files.
-- [x] (2026-08-15 05:39Z) Established the dedicated canonical DialectiCore repository at `B1-Mordred/DialectiCore`, committed and pushed the source-only production platform, and verified its Compose and frontend CI jobs while the complete backend suite runs against the pushed revision.
+- [x] (2026-08-15 05:54Z) Established the dedicated canonical DialectiCore repository at `B1-Mordred/DialectiCore`, committed and pushed the source-only production platform, and obtained fully green GitHub CI run `31867941602` on revision `bc889aeb274ac57c5d4b28efb9f607931e22d200` (Compose, frontend tests/build, Ruff, and all 798 backend tests).
 
 ## Surprises & Discoveries
 
@@ -312,6 +312,9 @@ source provenance at `https://github.com/B1-Mordred/DialectiCore`; the initial
 production-platform commit and Python 3.12 compatibility correction are pushed
 on `main`, with source-only ignore boundaries and GitHub CI covering Ruff, the
 full backend suite, frontend tests/build, and production Compose validation.
+Clean-run workspace dependencies discovered by the first CI attempts were
+removed from the affected health tests; run `31867941602` is fully green on
+revision `bc889aeb274ac57c5d4b28efb9f607931e22d200`.
 
 ## Context and Orientation
 
@@ -481,5 +484,10 @@ API responsiveness evidence, and fully validated replacement recovery archive.
 Plan update note (2026-08-15 05:39Z): Recorded the user's dedicated canonical
 `B1-Mordred/DialectiCore` repository, the deliberate separation from the
 unchanged TubeFactory project, source-only repository boundaries, pushed
-production commits, and GitHub CI coverage. The exact final revision and green
-workflow run are appended after the documentation-only provenance commit lands.
+production commits, and GitHub CI coverage.
+
+Plan update note (2026-08-15 05:54Z): Recorded fully green GitHub CI run
+`31867941602` on source revision
+`bc889aeb274ac57c5d4b28efb9f607931e22d200`: Compose and frontend passed, and
+the clean Python 3.12 backend job passed Ruff plus all 798 tests after its two
+workspace-dependent health tests were made self-contained.
