@@ -16559,7 +16559,10 @@ def test_timeline_api_builds_reads_and_edits_timeline(tmp_path: Path) -> None:
         assert fetched.status_code == 200
         timeline = fetched.json()["timeline"]
         timeline_entity = fetched.json()["timeline_entity"]
-        assert timeline["schema_version"] == "episode_timeline.v2"
+        assert timeline["schema_version"] == "episode_timeline.v3"
+        assert timeline["track_schema_version"] == (
+            "dialecticore.parallel_directing_tracks.v1"
+        )
         assert len(timeline["segments"]) == len(playable_turns)
         assert [segment["source_discussion_turn_ids"] for segment in timeline["segments"]] == [
             [str(turn_id) for turn_id in turn.source_discussion_turn_ids] for turn in playable_turns

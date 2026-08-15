@@ -4275,52 +4275,20 @@ class ComfyUiService:
         payload: bytes,
         content_type: str,
     ) -> tuple[bytes, str, bool]:
-        """Convert alpha PNG images for B1's raw-media classifier.
+        """Preserve canonical image bytes for authenticated B1 uploads.
 
-        The private source remains untouched. B1 currently classifies an RGBA
-        PNG raw upload as octet-stream, while accepting a baseline RGB JPEG.
+        B1's current staged-upload endpoint accepts RGBA PNG references and
+        retains their declared MIME type and checksum. Older deployments
+        classified those uploads as generic binary data, so this method once
+        converted every alpha PNG to an unqualified baseline JPEG. That
+        destroyed alpha and reduced multi-megabyte identity references to tens
+        of kilobytes before inference. Keep the compatibility return shape, but
+        do not transform a supported image format here.
         """
-        if content_type != "image/png" or not self._png_has_alpha_channel(payload):
-            return payload, content_type, False
-        completed = subprocess.run(
-            [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-f",
-                "image2pipe",
-                "-i",
-                "pipe:0",
-                "-frames:v",
-                "1",
-                "-pix_fmt",
-                "yuvj420p",
-                "-f",
-                "image2pipe",
-                "-vcodec",
-                "mjpeg",
-                "pipe:1",
-            ],
-            input=payload,
-            capture_output=True,
-            check=False,
-        )
-        if completed.returncode != 0 or not completed.stdout:
-            detail = completed.stderr.decode("utf-8", errors="replace").strip()
-            raise ValueError(
-                "unable to normalize alpha PNG portrait for B1"
-                + (f": {detail[:300]}" if detail else "")
-            )
-        return completed.stdout, "image/jpeg", True
-
-    def _png_has_alpha_channel(self, payload: bytes) -> bool:
-        return (
-            len(payload) >= 26
-            and payload.startswith(b"\x89PNG\r\n\x1a\n")
-            and payload[12:16] == b"IHDR"
-            and payload[25] in {4, 6}
-        )
+        normalized_content_type = content_type.split(";", 1)[0].strip().lower()
+        if normalized_content_type not in {"image/png", "image/jpeg", "image/webp"}:
+            raise ValueError("B1 image upload must be PNG, JPEG, or WebP")
+        return payload, normalized_content_type, False
 
     def _wav_duration_ms(self, payload: bytes) -> int:
         try:

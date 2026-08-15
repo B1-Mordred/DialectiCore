@@ -2475,6 +2475,33 @@ button {
   overflow: hidden;
 }
 
+.qualificationReviewPlayer {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid #b9d8d4;
+  border-radius: 8px;
+  background: #f6fbfa;
+}
+
+.qualificationReviewPlayer .sectionTitle {
+  align-items: start;
+}
+
+.qualificationReviewPlayer .sectionTitle p {
+  max-width: 760px;
+  margin: 4px 0 0;
+  color: #64717a;
+}
+
+.qualificationReviewPlayer video {
+  width: 100%;
+  max-height: 68vh;
+  border-radius: 6px;
+  background: #020617;
+}
+
 .videoDirectionPanel {
   margin-bottom: 24px;
   padding: 16px 18px 18px;
@@ -3633,6 +3660,79 @@ button {
   grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
   gap: 14px;
   padding: 14px;
+}
+
+.timelineLanes {
+  display: grid;
+  gap: 6px;
+  margin: 14px 14px 0;
+  padding: 10px;
+  border: 1px solid #dde4e7;
+  border-radius: 6px;
+  background: #f8fafb;
+  overflow-x: auto;
+}
+
+.timelineLane {
+  display: grid;
+  grid-template-columns: 132px minmax(560px, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.timelineLane > strong {
+  color: #52616b;
+  font-size: 12px;
+}
+
+.timelineLaneRail {
+  position: relative;
+  min-height: 30px;
+  border-left: 1px solid #cbd5da;
+  border-right: 1px solid #cbd5da;
+  background-image: linear-gradient(to right, #e8eef1 1px, transparent 1px);
+  background-size: 10% 100%;
+}
+
+.timelineLaneClip {
+  position: absolute;
+  top: 3px;
+  height: 24px;
+  min-width: 7px;
+  overflow: hidden;
+  border: 1px solid #5ca59e;
+  border-radius: 4px;
+  padding: 0 6px;
+  background: #dff2ef;
+  color: #174f4a;
+  font-size: 11px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.timelineLaneClip.selected,
+.timelineLaneClip:hover {
+  border-color: #0f766e;
+  background: #bfe5df;
+}
+
+.timelineClipEditor {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) repeat(3, minmax(120px, 0.7fr)) auto;
+  gap: 12px;
+  align-items: end;
+  margin: 10px 14px 0;
+  padding: 12px;
+  border: 1px solid #b9d8d4;
+  border-radius: 6px;
+  background: #f1faf8;
+}
+
+.timelineClipEditor > strong {
+  align-self: center;
+  overflow-wrap: anywhere;
 }
 
 .timelineSceneList {

@@ -2255,7 +2255,7 @@ async def test_b1_managed_media_generation_submits_media_job(tmp_path: Path, mon
             field = request.headers["x-b1-field"]
             upload_fields.append(field)
             if field == "portrait":
-                assert request.headers["content-type"] == "image/jpeg"
+                assert request.headers["content-type"] == "image/png"
                 return httpx.Response(
                     200,
                     json={"reference": {"id": "upload-portrait", "field": "portrait"}},
@@ -2324,12 +2324,30 @@ async def test_b1_managed_media_generation_submits_media_job(tmp_path: Path, mon
     assert submitted_asset.generation_metadata["adapter"] == "b1_managed_media"
     assert submitted_asset.generation_metadata["remote_job_id"] == "job-managed-1"
     assert submitted_asset.generation_metadata["lip_sync_mode"] == "audio_driven"
-    assert submitted_asset.generation_metadata["portrait_repacked_for_b1"] is True
-    assert submitted_asset.generation_metadata["b1_portrait_content_type"] == "image/jpeg"
+    assert submitted_asset.generation_metadata["portrait_repacked_for_b1"] is False
+    assert submitted_asset.generation_metadata["b1_portrait_content_type"] == "image/png"
     assert (
         submitted_asset.generation_metadata["managed_media_api_base"]
         == "https://api.ai.b1.germering"
     )
+
+
+def test_b1_image_transport_preserves_alpha_png_bytes() -> None:
+    source = png_rgba(
+        2,
+        2,
+        [(40, 90, 180, 128), (40, 90, 180, 0), (40, 90, 180, 255), (1, 2, 3, 4)],
+    )
+
+    payload, content_type, repacked = ComfyUiService(Settings())._prepare_b1_image_for_upload(
+        source,
+        "image/png",
+    )
+
+    assert payload == source
+    assert hashlib.sha256(payload).digest() == hashlib.sha256(source).digest()
+    assert content_type == "image/png"
+    assert repacked is False
 
 
 @pytest.mark.asyncio
@@ -2643,7 +2661,7 @@ async def test_b1_seated_character_uploads_private_identity_and_studio_inputs(
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/media/uploads"
-        assert request.headers["content-type"] == "image/jpeg"
+        assert request.headers["content-type"] == "image/png"
         field = request.headers["x-b1-field"]
         uploaded_fields.append(field)
         return httpx.Response(200, json={"reference": {"id": f"upload_{field}"}})
@@ -2679,9 +2697,9 @@ async def test_b1_seated_character_uploads_private_identity_and_studio_inputs(
         "height": 720,
         "seed": payload["input"]["seed"],
     }
-    assert metadata["b1_upload_references"]["studio_reference"]["repacked_for_b1"] is True
-    assert metadata["b1_upload_references"]["host"]["portrait_repacked_for_b1"] is True
-    assert metadata["b1_upload_references"]["host"]["full_body_repacked_for_b1"] is True
+    assert metadata["b1_upload_references"]["studio_reference"]["repacked_for_b1"] is False
+    assert metadata["b1_upload_references"]["host"]["portrait_repacked_for_b1"] is False
+    assert metadata["b1_upload_references"]["host"]["full_body_repacked_for_b1"] is False
 
 
 @pytest.mark.asyncio

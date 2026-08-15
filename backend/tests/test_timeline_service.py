@@ -122,9 +122,7 @@ def test_timeline_uses_completed_primer_render_before_discussion(
             "render_ready": True,
         },
     )
-    episode.assets.extend(
-        [discussion_audio, discussion_video, raw_primer_source, primer_render]
-    )
+    episode.assets.extend([discussion_audio, discussion_video, raw_primer_source, primer_render])
     episode.workflow_control["primer_production"] = {
         "status": "completed",
         "render_asset_id": str(primer_render.id),
@@ -269,26 +267,71 @@ def test_seated_panel_timeline_cuts_to_composited_rear_screen_media(
 
     timeline = TimelineService(settings)._compose_timeline(episode, transcript, [turn])
 
-    assert len(timeline["segments"]) == 3
+    assert len(timeline["segments"]) == 1
     segment = timeline["segments"][0]
-    screen_segment = timeline["segments"][1]
     assert timeline["media"]["composition_policy"] == "seated_studio_panel.v1"
+    assert timeline["schema_version"] == "episode_timeline.v3"
+    assert timeline["track_schema_version"] == ("dialecticore.parallel_directing_tracks.v1")
     assert segment["video_asset_id"] == str(video.id)
     assert segment["studio_panel_scene_asset_id"] == str(panel.id)
     assert segment["direction"]["speaker_mouth_mode"] == "audio_driven_seated_panel"
     assert segment["visual_layers"][0]["purpose"] == "audio_driven_seated_panel_full_frame"
-    assert segment["wall_screen_visual_asset_id"] is None
-    assert screen_segment["segment_type"] == "discussion_wall_screen_insert"
-    assert screen_segment["direction"]["action"] == "broll_insert"
-    assert screen_segment["wall_screen_visual_asset_id"] == str(wall_screen.id)
-    assert [layer["role"] for layer in screen_segment["visual_layers"]] == [
-        "studio_scene",
-        "wall_screen_broll",
-    ]
-    assert screen_segment["visual_layers"][1]["purpose"] == (
-        "rear_studio_display_composited"
+    assert segment["wall_screen_visual_asset_id"] == str(wall_screen.id)
+    assert timeline["tracks"]["dialogue"][0]["asset_id"] == str(audio.id)
+    assert timeline["tracks"]["character_performance"][0]["asset_id"] == str(video.id)
+    assert timeline["tracks"]["camera_direction"][0]["framing_policy"] == (
+        "active_speaker_centered.v2"
     )
+    content = timeline["tracks"]["broll_content"][0]
+    presentation = timeline["tracks"]["broll_presentation"][0]
+    assert content["asset_id"] == str(wall_screen.id)
+    assert content["audio_mode"] == "muted"
+    assert presentation["content_clip_id"] == content["id"]
+    assert [keyframe["state"] for keyframe in presentation["keyframes"]] == [
+        "rear_screen",
+        "rear_screen",
+    ]
     assert sum(item["duration_ms"] for item in timeline["segments"]) == 9_000
+
+
+def test_parallel_directing_tracks_are_normalized_and_legacy_tracks_survive() -> None:
+    service = TimelineService(Settings())
+
+    normalized = service._normalize_timeline_tracks(
+        {
+            "video_primary": ["segment-1"],
+            "broll_content": [
+                {
+                    "id": "clip-2",
+                    "start_ms": 3_000,
+                    "end_ms": 5_000,
+                    "source_in_ms": 400,
+                },
+                {
+                    "id": "clip-1",
+                    "start_ms": 1_000,
+                    "end_ms": 2_500,
+                    "source_in_ms": 0,
+                    "source_out_ms": 1_500,
+                },
+            ],
+        }
+    )
+
+    assert normalized["video_primary"] == ["segment-1"]
+    assert [clip["id"] for clip in normalized["broll_content"]] == ["clip-1", "clip-2"]
+    assert normalized["broll_content"][1]["duration_ms"] == 2_000
+    assert normalized["broll_content"][1]["source_out_ms"] == 2_400
+
+    with pytest.raises(ValueError, match="clip IDs must be unique"):
+        service._normalize_timeline_tracks(
+            {
+                "broll_content": [
+                    {"id": "duplicate", "start_ms": 0, "end_ms": 1_000},
+                    {"id": "duplicate", "start_ms": 2_000, "end_ms": 3_000},
+                ]
+            }
+        )
 
 
 def test_timeline_build_rejects_pending_review_transcript(tmp_path: Path) -> None:
@@ -423,9 +466,7 @@ async def test_timeline_builder_persists_editable_timeline_with_qc(tmp_path: Pat
                             )
                         },
                         "shot_plan": {
-                            "camera_transition": "studio_establishing"
-                            if index == 1
-                            else "cut",
+                            "camera_transition": "studio_establishing" if index == 1 else "cut",
                         },
                     },
                 ),
@@ -516,8 +557,9 @@ async def test_timeline_builder_persists_editable_timeline_with_qc(tmp_path: Pat
     assert timeline["segments"][0]["media_fingerprints"]["audio"]["schema_version"] == (
         "timeline_media_asset_fingerprint.v1"
     )
-    assert timeline["segments"][0]["media_fingerprints"]["video_primary"]["asset_id"] == (
-        timeline["segments"][0]["video_asset_id"]
+    assert (
+        timeline["segments"][0]["media_fingerprints"]["video_primary"]["asset_id"]
+        == (timeline["segments"][0]["video_asset_id"])
     )
     assert timeline["segments"][0]["character_reference_image_uri"].endswith(
         f"{playable_turns[0].speaker_participant_id}/reference.png"
@@ -527,12 +569,13 @@ async def test_timeline_builder_persists_editable_timeline_with_qc(tmp_path: Pat
         for layer in timeline["segments"][0]["visual_layers"]
         if layer["role"] == "video_primary"
     )
-    assert primary_layer["character_reference_image_uri"] == (
-        timeline["segments"][0]["character_reference_image_uri"]
+    assert (
+        primary_layer["character_reference_image_uri"]
+        == (timeline["segments"][0]["character_reference_image_uri"])
     )
-    assert {
-        layer["role"] for layer in timeline["segments"][0]["visual_layers"]
-    }.issuperset({"studio_scene", "video_primary", "broll"})
+    assert {layer["role"] for layer in timeline["segments"][0]["visual_layers"]}.issuperset(
+        {"studio_scene", "video_primary", "broll"}
+    )
     assert timeline["segments"][0]["camera_view"] == "speaker_medium"
     assert timeline["segments"][0]["direction"]["speaker_mouth_mode"] == (
         "audio_driven_single_portrait"
@@ -573,9 +616,10 @@ async def test_timeline_builder_persists_editable_timeline_with_qc(tmp_path: Pat
     assert timeline_assets[-1].generation_metadata["edit_version"] == 2
     assert timeline_assets[-1].generation_metadata["timeline_entity"]["version"] == 2
     assert timeline_assets[-1].generation_metadata["timeline_entity"]["status"] == "completed"
-    assert timeline_assets[-1].generation_metadata["timeline_json"]["segments"][0][
-        "camera_transition"
-    ] == "dissolve"
+    assert (
+        timeline_assets[-1].generation_metadata["timeline_json"]["segments"][0]["camera_transition"]
+        == "dissolve"
+    )
     assert (
         timeline_assets[-1].generation_metadata["timeline_json"]["segments"][0]["duration_ms"]
         == 1800
@@ -601,8 +645,16 @@ async def test_timeline_builder_persists_editable_timeline_with_qc(tmp_path: Pat
                 "duration_ms": 30_000,
                 "segments": preview_segments,
                 "tracks": {
-                    name: [segment_id for segment_id in segment_ids if segment_id in preview_ids]
-                    for name, segment_ids in timeline["tracks"].items()
+                    name: [
+                        item
+                        for item in items
+                        if (
+                            item in preview_ids
+                            if isinstance(item, str)
+                            else item.get("linked_segment_id") in preview_ids
+                        )
+                    ]
+                    for name, items in timeline["tracks"].items()
                 },
                 "chapters": [],
                 "program_structure": {
@@ -626,8 +678,7 @@ async def test_timeline_builder_persists_editable_timeline_with_qc(tmp_path: Pat
     preview_qc = next(
         result
         for result in reversed(qualification_preview.quality_results)
-        if result.check_type == "timeline_integrity"
-        and result.target_id == str(preview_asset.id)
+        if result.check_type == "timeline_integrity" and result.target_id == str(preview_asset.id)
     )
     assert preview_qc.status == "pass"
     assert preview_qc.details["qualification_preview"] is True
@@ -829,10 +880,7 @@ async def test_timeline_qc_fails_when_shot_planned_reusable_media_is_not_render_
     ][-1]
     issues = {issue["issue"]: issue for issue in timeline_qc.details["issues"]}
     assert timeline_qc.status == "fail"
-    assert (
-        timeline_qc.details["missing_shot_planned_reaction_loop_segment_count"]
-        == 1
-    )
+    assert timeline_qc.details["missing_shot_planned_reaction_loop_segment_count"] == 1
     assert timeline_qc.details["missing_shot_planned_studio_scene_segment_count"] == 1
     assert "timeline_missing_shot_planned_reaction_loop" in issues
     assert "timeline_missing_shot_planned_studio_scene" in issues

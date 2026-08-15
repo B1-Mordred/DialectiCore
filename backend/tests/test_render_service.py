@@ -57,9 +57,7 @@ def test_timeline_integrity_warning_does_not_block_preview_render() -> None:
         source_entity_id="transcript-test",
         status="completed",
         generation_metadata={
-            "timeline_json": {
-                "media": {"composition_policy": "seated_studio_panel.v1"}
-            }
+            "timeline_json": {"media": {"composition_policy": "seated_studio_panel.v1"}}
         },
     )
     episode.quality_results.append(
@@ -73,9 +71,7 @@ def test_timeline_integrity_warning_does_not_block_preview_render() -> None:
             details={
                 "failure_count": 0,
                 "warning_count": 1,
-                "issues": [
-                    {"severity": "warning", "issue": "timeline_missing_subtitles"}
-                ],
+                "issues": [{"severity": "warning", "issue": "timeline_missing_subtitles"}],
             },
         )
     )
@@ -122,9 +118,7 @@ def test_thumbnail_seek_prefers_first_rear_screen_cutaway() -> None:
                         {
                             "start_ms": 71_500,
                             "duration_ms": 4_000,
-                            "layout_policy": {
-                                "name": "seated_panel_rear_screen_cutaway"
-                            },
+                            "layout_policy": {"name": "seated_panel_rear_screen_cutaway"},
                         },
                     ]
                 }
@@ -284,9 +278,7 @@ def test_render_request_records_explicit_qualification_scope() -> None:
     request = RenderRequest(review_scope="qualification_slice")
 
     assert request.review_scope == "qualification_slice"
-    assert RenderService._render_request_payload(request)["review_scope"] == (
-        "qualification_slice"
-    )
+    assert RenderService._render_request_payload(request)["review_scope"] == ("qualification_slice")
     assert RenderRequest().review_scope == "full_timeline"
 
 
@@ -378,12 +370,21 @@ def test_seated_panel_virtual_camera_uses_normalized_speaker_region() -> None:
     )
 
     assert camera == {
-        "schema_version": "dialecticore.virtual_camera.v1",
+        "schema_version": "dialecticore.virtual_camera.v2",
         "view": "speaker_close_up",
         "scale": 1.9968,
         "focus_x": 0.49,
         "focus_y": 0.295,
-        "focus_source": "b1_normalized_face_region_or_seating_plan",
+        "focus_source": "active_speaker_face_region_or_seating_plan",
+        "speaker_participant_id": "host",
+        "context_participant_ids": [],
+        "framing_policy": {
+            "speaker_target_frame_x": 0.5,
+            "speaker_allowed_frame_x": [0.45, 0.55],
+            "speaker_must_be_primary": True,
+            "retain_head_shoulders": True,
+            "retain_desk_context": True,
+        },
     }
     assert "crop=w='trunc(iw/1.9968/2)*2'" in service._seated_panel_virtual_camera_filter(
         preset,
@@ -392,6 +393,151 @@ def test_seated_panel_virtual_camera_uses_normalized_speaker_region() -> None:
     layout_policy = composition["segment_layers"][0]["layout_policy"]
     assert layout_policy["name"] == "seated_panel_virtual_camera"
     assert layout_policy["virtual_camera"] is True
+
+
+def test_seated_panel_virtual_camera_centers_speaker_not_pair_midpoint() -> None:
+    service = RenderService(Settings())
+    episode_id = uuid4()
+    scene = Asset(
+        episode_id=episode_id,
+        asset_type=AssetType.studio_scene,
+        source_entity_type="episode",
+        source_entity_id="episode:panel",
+        status="completed",
+        generation_metadata={
+            "studio_panel": {
+                "seat_map": [
+                    {
+                        "participant_id": "speaker",
+                        "face_region": {"x": 0.18, "y": 0.2, "width": 0.12, "height": 0.2},
+                    },
+                    {
+                        "participant_id": "neighbor",
+                        "face_region": {"x": 0.58, "y": 0.2, "width": 0.12, "height": 0.2},
+                    },
+                ]
+            }
+        },
+    )
+    primary = Asset(
+        episode_id=episode_id,
+        asset_type=AssetType.video,
+        source_entity_type="transcript_turn",
+        source_entity_id="turn-speaker",
+        status="completed",
+        generation_metadata={
+            "shot_plan": {
+                "paired_participant_ids": ["neighbor"],
+                "seating_plan": {"speaker": 1, "neighbor": 2},
+            }
+        },
+    )
+
+    camera = service._seated_panel_virtual_camera(
+        segment={
+            "speaker_id": "speaker",
+            "video_asset_id": str(primary.id),
+            "studio_panel_scene_asset_id": str(scene.id),
+            "direction": {
+                "view": "panel_two_shot",
+                "action": "cut",
+                "speaker_mouth_mode": "audio_driven_seated_panel",
+            },
+        },
+        asset_by_id={str(primary.id): primary, str(scene.id): scene},
+    )
+
+    assert camera is not None
+    assert camera["focus_x"] == 0.24
+    assert camera["focus_x"] != 0.44
+    assert camera["speaker_participant_id"] == "speaker"
+    assert camera["context_participant_ids"] == ["neighbor"]
+
+
+def test_parallel_broll_render_view_preserves_dialogue_and_source_clock() -> None:
+    service = RenderService(Settings())
+    timeline = {
+        "duration_ms": 10_000,
+        "segments": [
+            {
+                "id": "segment-1",
+                "start_ms": 0,
+                "end_ms": 10_000,
+                "duration_ms": 10_000,
+                "speaker_id": "host",
+                "audio_asset_id": "audio-1",
+                "video_asset_id": "speaker-1",
+                "visual_layers": [{"role": "video_primary", "asset_id": "speaker-1"}],
+                "direction": {
+                    "view": "speaker_medium",
+                    "action": "cut",
+                    "speaker_mouth_mode": "audio_driven_seated_panel",
+                },
+                "graphics": [{"kind": "lower_third"}],
+                "citations": [],
+                "citation_overlay_asset_ids": [],
+            }
+        ],
+        "tracks": {
+            "broll_content": [
+                {
+                    "id": "content-1",
+                    "asset_id": "broll-1",
+                    "start_ms": 2_000,
+                    "end_ms": 9_000,
+                    "source_in_ms": 500,
+                }
+            ],
+            "broll_presentation": [
+                {
+                    "id": "presentation-1",
+                    "content_clip_id": "content-1",
+                    "linked_segment_id": "segment-1",
+                    "start_ms": 2_000,
+                    "end_ms": 9_000,
+                    "keyframes": [
+                        {"time_ms": 2_000, "state": "rear_screen"},
+                        {"time_ms": 5_000, "state": "fullscreen"},
+                        {"time_ms": 8_000, "state": "rear_screen"},
+                    ],
+                }
+            ],
+        },
+    }
+
+    render_view = service._timeline_render_view(timeline)
+
+    assert timeline["segments"][0]["end_ms"] == 10_000
+    assert [segment["start_ms"] for segment in render_view["segments"]] == [
+        0,
+        2_000,
+        5_000,
+        8_000,
+        9_000,
+    ]
+    assert [segment["end_ms"] for segment in render_view["segments"]] == [
+        2_000,
+        5_000,
+        8_000,
+        9_000,
+        10_000,
+    ]
+    assert [segment["audio_source_offset_ms"] for segment in render_view["segments"]] == [
+        0,
+        2_000,
+        5_000,
+        8_000,
+        9_000,
+    ]
+    assert render_view["segments"][1]["broll_playback"]["source_start_ms"] == 500
+    assert render_view["segments"][2]["broll_playback"]["source_start_ms"] == 3_500
+    assert render_view["segments"][3]["broll_playback"]["source_start_ms"] == 6_500
+    assert render_view["segments"][1]["broll_playback"]["state"] == "rear_screen"
+    assert render_view["segments"][2]["broll_playback"]["state"] == "fullscreen"
+    assert render_view["segments"][3]["broll_playback"]["state"] == "rear_screen"
+    assert render_view["segments"][2]["audio_asset_id"] == "audio-1"
+    assert render_view["segments"][2]["direction"]["speaker_mouth_mode"] == ("off_camera_dialogue")
+    assert render_view["render_materialization"]["source_clock_preserved"] is True
 
 
 def test_scene_filter_omits_speaker_lower_third_for_off_camera_segment() -> None:

@@ -120,6 +120,7 @@ class TimelineService:
         if not isinstance(request.timeline.get("tracks"), dict):
             raise ValueError("timeline must include tracks")
         segments = self._normalize_timeline_segments(raw_segments)
+        tracks = self._normalize_timeline_tracks(request.timeline["tracks"])
 
         latest = self._latest_timeline_asset(episode, transcript)
         if latest is not None:
@@ -135,6 +136,7 @@ class TimelineService:
             "language": transcript.language,
             "editable": True,
             "edit_version": int(request.timeline.get("edit_version", 1)) + 1,
+            "tracks": tracks,
             "segments": segments,
             "updated_at": datetime.now(UTC).isoformat(),
         }
@@ -197,6 +199,60 @@ class TimelineService:
                     "end_ms": end_ms,
                     "duration_ms": end_ms - start_ms,
                 }
+            )
+        return normalized
+
+    def _normalize_timeline_tracks(self, tracks: dict) -> dict:
+        normalized: dict = {}
+        for track_name, raw_clips in tracks.items():
+            if not isinstance(track_name, str) or not track_name:
+                raise ValueError("timeline track names must be non-empty strings")
+            if not isinstance(raw_clips, list):
+                raise ValueError(f"timeline track {track_name} must be an array")
+            if track_name not in {
+                "dialogue",
+                "character_performance",
+                "camera_direction",
+                "broll_content",
+                "broll_presentation",
+                "caption_clips",
+            }:
+                normalized[track_name] = raw_clips
+                continue
+            clips: list[dict] = []
+            seen_ids: set[str] = set()
+            for raw_clip in raw_clips:
+                if not isinstance(raw_clip, dict):
+                    raise ValueError(f"timeline track {track_name} clips must be objects")
+                clip_id = str(raw_clip.get("id") or "").strip()
+                if not clip_id or clip_id in seen_ids:
+                    raise ValueError(f"timeline track {track_name} clip IDs must be unique")
+                start_ms = int(raw_clip.get("start_ms") or 0)
+                end_ms = int(raw_clip.get("end_ms") or 0)
+                if start_ms < 0 or end_ms <= start_ms:
+                    raise ValueError(
+                        f"timeline track {track_name} clip end_ms must exceed start_ms"
+                    )
+                source_in_ms = int(raw_clip.get("source_in_ms") or 0)
+                source_out_ms = int(
+                    raw_clip.get("source_out_ms") or source_in_ms + end_ms - start_ms
+                )
+                if source_in_ms < 0 or source_out_ms <= source_in_ms:
+                    raise ValueError(f"timeline track {track_name} source range must be positive")
+                clips.append(
+                    {
+                        **raw_clip,
+                        "id": clip_id,
+                        "start_ms": start_ms,
+                        "end_ms": end_ms,
+                        "duration_ms": end_ms - start_ms,
+                        "source_in_ms": source_in_ms,
+                        "source_out_ms": source_out_ms,
+                    }
+                )
+                seen_ids.add(clip_id)
+            normalized[track_name] = sorted(
+                clips, key=lambda clip: (clip["start_ms"], clip["end_ms"], clip["id"])
             )
         return normalized
 
@@ -282,6 +338,12 @@ class TimelineService:
             "graphics": [],
             "citations": [],
             "chapters": [],
+            "dialogue": [],
+            "character_performance": [],
+            "camera_direction": [],
+            "broll_content": [],
+            "broll_presentation": [],
+            "caption_clips": [],
         }
         chapters: list[dict] = []
         previous_turn_type: str | None = None
@@ -346,25 +408,13 @@ class TimelineService:
             primary_video_asset = opening_visual_asset or generated_primary_video_asset
             broll_asset = broll_by_turn.get(str(turn.id))
             shot_plan = self._shot_plan_for_asset(primary_video_asset)
-            studio_panel_scene_asset = next(
-                (
-                    asset
-                    for asset in episode.assets
-                    if str(asset.id)
-                    == str(shot_plan.get("studio_panel_scene_asset_id") or "")
-                    and asset.status == "completed"
-                ),
-                None,
-            )
             reaction_asset = (
                 reaction_by_participant.get(turn.speaker_participant_id)
                 if shot_plan.get("reusable_reaction_asset_id")
                 else None
             )
             group_cutaway_asset = (
-                studio_group_cutaway
-                if shot_plan.get("studio_group_cutaway_asset_id")
-                else None
+                studio_group_cutaway if shot_plan.get("studio_group_cutaway_asset_id") else None
             )
             fallback_asset = None if seated_panel else broll_asset or reaction_asset or studio_scene
             duration_ms = (
@@ -398,8 +448,7 @@ class TimelineService:
                     "episode_opening"
                     if opening_visual_asset
                     else "post_primer_host_bridge"
-                    if turn.turn_type is not None
-                    and turn.turn_type.value == "post_primer_bridge"
+                    if turn.turn_type is not None and turn.turn_type.value == "post_primer_bridge"
                     else "discussion"
                 ),
                 "secondary_visual_asset_id": (
@@ -462,13 +511,13 @@ class TimelineService:
                     self._seated_panel_visual_layers(primary_video_asset)
                     if seated_panel
                     else self._visual_layers(
-                    primary_video_asset=primary_video_asset,
-                    broll_asset=broll_asset,
-                    reaction_asset=reaction_asset,
-                    studio_scene=studio_scene,
-                    studio_group_cutaway=group_cutaway_asset,
-                    studio_reference_image_uri=episode.definition.media.scene_reference_image_uri,
-                    fallback_asset=fallback_asset,
+                        primary_video_asset=primary_video_asset,
+                        broll_asset=broll_asset,
+                        reaction_asset=reaction_asset,
+                        studio_scene=studio_scene,
+                        studio_group_cutaway=group_cutaway_asset,
+                        studio_reference_image_uri=episode.definition.media.scene_reference_image_uri,
+                        fallback_asset=fallback_asset,
                     )
                 ),
                 "graphics": self._graphics_for_turn(
@@ -476,23 +525,9 @@ class TimelineService:
                     opening=opening_visual_asset is not None,
                 ),
                 "citations": self._citations_for_turn(turn),
-                "citation_overlay_asset_ids": [
-                    str(asset.id) for asset in citation_card_assets
-                ],
+                "citation_overlay_asset_ids": [str(asset.id) for asset in citation_card_assets],
             }
             turn_segments = [segment]
-            if (
-                seated_panel
-                and broll_asset is not None
-                and studio_panel_scene_asset is not None
-                and duration_ms >= 6_000
-            ):
-                turn_segments = self._seated_panel_broll_insert_segments(
-                    segment=segment,
-                    primary_video_asset=primary_video_asset,
-                    studio_scene_asset=studio_panel_scene_asset,
-                    wall_screen_asset=broll_asset,
-                )
             if (
                 not seated_panel
                 and index == 1
@@ -559,6 +594,12 @@ class TimelineService:
                     tracks["graphics"].append(timeline_segment_id)
                 if timeline_segment["citations"]:
                     tracks["citations"].append(timeline_segment_id)
+                self._append_parallel_directing_clips(
+                    tracks=tracks,
+                    segment=timeline_segment,
+                    broll_asset=broll_asset,
+                    seated_panel=seated_panel,
+                )
             current_turn_type = self._chapter_key(index)
             if current_turn_type != previous_turn_type:
                 chapter = {
@@ -574,7 +615,7 @@ class TimelineService:
 
         return {
             "id": str(uuid4()),
-            "schema_version": "episode_timeline.v2",
+            "schema_version": "episode_timeline.v3",
             "episode_id": str(episode.id),
             "transcript_version_id": str(transcript.id),
             "language": transcript.language,
@@ -595,15 +636,14 @@ class TimelineService:
                 "directing": episode.definition.media.directing.model_dump(mode="json"),
             },
             "tracks": tracks,
+            "track_schema_version": "dialecticore.parallel_directing_tracks.v1",
             "segments": segments,
             "chapters": chapters,
             "program_structure": {
                 "primer": {
                     "included": primer_render is not None,
                     "render_asset_id": str(primer_render.id) if primer_render else None,
-                    "duration_ms": int(primer_render.duration_ms or 0)
-                    if primer_render
-                    else 0,
+                    "duration_ms": int(primer_render.duration_ms or 0) if primer_render else 0,
                 },
                 "discussion": {
                     "start_ms": discussion_start_ms,
@@ -689,12 +729,129 @@ class TimelineService:
                     "character_reference_image_uri": self._asset_reference_image_uri(
                         primary_video_asset
                     ),
-                    "character_reference_images": self._asset_reference_images(
-                        primary_video_asset
-                    ),
+                    "character_reference_images": self._asset_reference_images(primary_video_asset),
                 }
             )
         return layers
+
+    def _append_parallel_directing_clips(
+        self,
+        *,
+        tracks: dict,
+        segment: dict,
+        broll_asset: Asset | None,
+        seated_panel: bool,
+    ) -> None:
+        """Index independently editable clips on the episode master clock.
+
+        Sequential segments remain the compatibility and dialogue-rendering
+        layer.  These clips add overlap without cutting a dialogue turn into
+        artificial before/insert/after segments.
+        """
+        segment_id = str(segment["id"])
+        start_ms = int(segment["start_ms"])
+        end_ms = int(segment["end_ms"])
+        duration_ms = end_ms - start_ms
+        common = {
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+            "duration_ms": duration_ms,
+            "source_in_ms": int(segment.get("audio_source_offset_ms") or 0),
+            "source_out_ms": int(segment.get("audio_source_offset_ms") or 0) + duration_ms,
+            "linked_segment_id": segment_id,
+            "source_turn_id": segment.get("source_turn_id"),
+        }
+        if segment.get("audio_asset_id"):
+            tracks["dialogue"].append(
+                {
+                    "id": f"dialogue-{segment_id}",
+                    **common,
+                    "asset_id": segment["audio_asset_id"],
+                    "audio_mode": "primary_dialogue",
+                }
+            )
+        if segment.get("video_asset_id"):
+            tracks["character_performance"].append(
+                {
+                    "id": f"character-{segment_id}",
+                    **common,
+                    "asset_id": segment["video_asset_id"],
+                    "participant_id": segment.get("speaker_id"),
+                    "performance_policy": "normalized_seated_character.v2",
+                }
+            )
+        direction = segment.get("direction") if isinstance(segment.get("direction"), dict) else {}
+        tracks["camera_direction"].append(
+            {
+                "id": f"camera-{segment_id}",
+                **common,
+                "speaker_participant_id": segment.get("speaker_id"),
+                "view": direction.get("view") or segment.get("camera_view") or "speaker_medium",
+                "action": direction.get("action") or segment.get("camera_action") or "cut",
+                "framing_policy": "active_speaker_centered.v2",
+            }
+        )
+        if segment.get("subtitle_asset_id"):
+            tracks["caption_clips"].append(
+                {
+                    "id": f"caption-{segment_id}",
+                    **common,
+                    "asset_id": segment["subtitle_asset_id"],
+                }
+            )
+        if broll_asset is None:
+            return
+
+        # Start after the shot establishes and finish before the next dialogue
+        # cut.  Content and presentation share a playback link, so changing the
+        # presentation envelope never restarts the source video.
+        inset_ms = min(1_000, max(0, duration_ms // 8))
+        broll_start_ms = start_ms + inset_ms
+        broll_end_ms = max(broll_start_ms + 1, end_ms - inset_ms)
+        broll_duration_ms = broll_end_ms - broll_start_ms
+        content_id = f"broll-content-{segment_id}"
+        tracks["broll_content"].append(
+            {
+                "id": content_id,
+                "start_ms": broll_start_ms,
+                "end_ms": broll_end_ms,
+                "duration_ms": broll_duration_ms,
+                "source_in_ms": 0,
+                "source_out_ms": broll_duration_ms,
+                "asset_id": str(broll_asset.id),
+                "linked_segment_id": segment_id,
+                "source_turn_id": segment.get("source_turn_id"),
+                "loop": broll_asset.asset_type != AssetType.video,
+                "audio_mode": "muted",
+                "provenance": broll_asset.generation_metadata.get("provenance"),
+            }
+        )
+        tracks["broll_presentation"].append(
+            {
+                "id": f"broll-presentation-{segment_id}",
+                "start_ms": broll_start_ms,
+                "end_ms": broll_end_ms,
+                "duration_ms": broll_duration_ms,
+                "source_in_ms": 0,
+                "source_out_ms": broll_duration_ms,
+                "content_clip_id": content_id,
+                "linked_segment_id": segment_id,
+                "crop_mode": "cover",
+                "overscan": 1.02,
+                "keyframes": [
+                    {
+                        "time_ms": broll_start_ms,
+                        "state": "rear_screen" if seated_panel else "fullscreen",
+                        "easing": "ease_in_out",
+                    },
+                    {
+                        "time_ms": broll_end_ms,
+                        "state": "rear_screen" if seated_panel else "fullscreen",
+                        "easing": "ease_in_out",
+                    },
+                ],
+            }
+        )
 
     def _seated_panel_broll_insert_segments(
         self,
@@ -764,9 +921,7 @@ class TimelineService:
                     }
                 )
             else:
-                piece["visual_layers"] = self._seated_panel_visual_layers(
-                    primary_video_asset
-                )
+                piece["visual_layers"] = self._seated_panel_visual_layers(primary_video_asset)
                 piece["wall_screen_visual_asset_id"] = None
                 piece["secondary_visual_asset_id"] = None
                 piece["camera_transition"] = (
@@ -865,9 +1020,7 @@ class TimelineService:
     ) -> dict:
         citation_fingerprints = [
             fingerprint
-            for fingerprint in (
-                self._asset_fingerprint(asset) for asset in citation_card_assets
-            )
+            for fingerprint in (self._asset_fingerprint(asset) for asset in citation_card_assets)
             if fingerprint is not None
         ]
         return {
@@ -947,8 +1100,7 @@ class TimelineService:
         issues: list[dict] = []
         preview_config = timeline.get("program_structure", {}).get("preview")
         qualification_preview = (
-            isinstance(preview_config, dict)
-            and preview_config.get("included") is True
+            isinstance(preview_config, dict) and preview_config.get("included") is True
         )
         if qualification_preview:
             turn_range = preview_config.get("turn_range")
@@ -964,9 +1116,7 @@ class TimelineService:
                 and 1 <= turn_range[0] <= turn_range[1] <= len(ordered_playable_turn_ids)
             )
             expected_turn_ids = (
-                ordered_playable_turn_ids[turn_range[0] - 1 : turn_range[1]]
-                if valid_range
-                else []
+                ordered_playable_turn_ids[turn_range[0] - 1 : turn_range[1]] if valid_range else []
             )
             duration_ms = int(timeline.get("duration_ms") or 0)
             if (
@@ -1226,12 +1376,9 @@ class TimelineService:
             if planned_group_id is not None:
                 actual_group_id = segment.get("studio_group_cutaway_asset_id")
                 planned_group = asset_by_id.get(planned_group_id)
-                if (
-                    actual_group_id != planned_group_id
-                    or not self._is_completed_render_ready_asset(
-                        planned_group,
-                        AssetType.studio_scene,
-                    )
+                if actual_group_id != planned_group_id or not self._is_completed_render_ready_asset(
+                    planned_group,
+                    AssetType.studio_scene,
                 ):
                     missing_shot_planned_studio_group_cutaway_count += 1
                     issues.append(
@@ -1322,9 +1469,7 @@ class TimelineService:
                 "citation_segment_count": citation_segment_count,
                 "citation_overlay_linked_segment_count": citation_overlay_linked_count,
                 "timing_gap_count": timing_gap_count,
-                "source_discussion_linked_segment_count": (
-                    source_discussion_linked_segment_count
-                ),
+                "source_discussion_linked_segment_count": (source_discussion_linked_segment_count),
                 "missing_source_discussion_link_segment_count": (
                     missing_source_discussion_link_count
                 ),
@@ -1430,11 +1575,7 @@ class TimelineService:
             "duration_ms": current.duration_ms,
             "render_ready": current.generation_metadata.get("render_ready"),
         }
-        return [
-            f"{key}_changed"
-            for key, value in checks.items()
-            if fingerprint.get(key) != value
-        ]
+        return [f"{key}_changed" for key, value in checks.items() if fingerprint.get(key) != value]
 
     def _completed_audio_assets_by_turn(
         self,

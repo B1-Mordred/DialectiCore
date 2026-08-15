@@ -806,6 +806,53 @@ type TimelinePayload = {
   [key: string]: unknown;
 };
 
+type TimelineTrackClip = {
+  id: string;
+  start_ms: number;
+  end_ms: number;
+  duration_ms?: number;
+  source_in_ms?: number;
+  source_out_ms?: number;
+  asset_id?: string | null;
+  linked_segment_id?: string | null;
+  participant_id?: string | null;
+  speaker_participant_id?: string | null;
+  content_clip_id?: string | null;
+  view?: string;
+  action?: string;
+  keyframes?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+};
+
+const DIRECTING_TRACK_LANES = [
+  ["dialogue", "Dialogue"],
+  ["character_performance", "Character"],
+  ["camera_direction", "Camera"],
+  ["broll_content", "B-roll content"],
+  ["broll_presentation", "B-roll presentation"],
+  ["caption_clips", "Captions"],
+] as const;
+
+function timelineTrackClips(
+  timeline: TimelinePayload | null,
+  trackName: string,
+): TimelineTrackClip[] {
+  const raw = timeline?.tracks?.[trackName];
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.filter(
+    (clip): clip is TimelineTrackClip =>
+      Boolean(
+        clip &&
+          typeof clip === "object" &&
+          typeof (clip as TimelineTrackClip).id === "string" &&
+          Number.isFinite(Number((clip as TimelineTrackClip).start_ms)) &&
+          Number.isFinite(Number((clip as TimelineTrackClip).end_ms)),
+      ),
+  );
+}
+
 type TimelineSegment = {
   id: string;
   start_ms?: number;
@@ -3546,6 +3593,20 @@ function App() {
   const legacyPreviewRebuildRequired = requiresFullTimelineRebuild(selectedEpisode);
   const directedTimelineRebuildNeeded = directedTimelineRebuildRequired(selectedEpisode);
   const currentEpisodeApproval = pendingApproval(selectedEpisode);
+  const currentApprovalTargetAsset = currentEpisodeApproval?.target_id
+    ? selectedEpisode?.assets?.find(
+        (asset) => asset.id === currentEpisodeApproval.target_id,
+      ) ?? null
+    : null;
+  const productionV2QualificationUrl =
+    currentEpisodeApproval?.stage ===
+      "production_v2_integrated_qualification_review" &&
+    currentApprovalTargetAsset?.asset_type === "render"
+      ? episodeAssetDownloadUrlById(
+          selectedEpisode?.id,
+          currentApprovalTargetAsset.id,
+        )
+      : null;
   React.useEffect(() => {
     if (
       latestWorkflowAdvance &&
@@ -6527,6 +6588,44 @@ function App() {
                 >
                   Open review
                 </button>
+              </section>
+            ) : null}
+
+            {productionV2QualificationUrl && currentApprovalTargetAsset ? (
+              <section
+                className="qualificationReviewPlayer"
+                aria-label="Production v2 qualification review"
+              >
+                <div className="sectionTitle">
+                  <div>
+                    <h2>Production v2 qualification</h2>
+                    <p>
+                      Review all six speakers, normalized stature, lip motion,
+                      centered camera framing, rear-screen B-roll, and the
+                      fullscreen round trip.
+                    </p>
+                  </div>
+                  <a
+                    className="secondaryButton compact"
+                    href={productionV2QualificationUrl}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    Download evidence
+                  </a>
+                </div>
+                <video
+                  controls
+                  key={currentApprovalTargetAsset.checksum ?? currentApprovalTargetAsset.id}
+                  preload="metadata"
+                  src={productionV2QualificationUrl}
+                />
+                <div className="timelineSceneEvidence">
+                  <span>{currentApprovalTargetAsset.width}×{currentApprovalTargetAsset.height}</span>
+                  <span>{currentApprovalTargetAsset.fps} fps</span>
+                  <span>{Math.round(Number(currentApprovalTargetAsset.duration_ms ?? 0) / 1000)}s</span>
+                  <span>{currentApprovalTargetAsset.checksum}</span>
+                </div>
               </section>
             ) : null}
 
@@ -23251,6 +23350,10 @@ function TimelineEditorPanel(props: {
   const [selectedSegmentId, setSelectedSegmentId] = React.useState<
     string | null
   >(null);
+  const [selectedTrackClip, setSelectedTrackClip] = React.useState<{
+    trackName: string;
+    clipId: string;
+  } | null>(null);
   const timelineKey = `${props.episode?.id ?? "none"}:${activeTimeline?.id ?? "none"}:${
     activeTimeline?.edit_version ?? 0
   }`;
@@ -23259,16 +23362,23 @@ function TimelineEditorPanel(props: {
     if (!activeTimeline) {
       setDraft(null);
       setSelectedSegmentId(null);
+      setSelectedTrackClip(null);
       return;
     }
     const next = cloneTimeline(activeTimeline);
     setDraft(next);
     setSelectedSegmentId(next.segments?.[0]?.id ?? null);
+    setSelectedTrackClip(null);
   }, [timelineKey]);
 
   const segments = draft?.segments ?? [];
   const selectedSegment =
     segments.find((segment) => segment.id === selectedSegmentId) ?? null;
+  const selectedClip = selectedTrackClip
+    ? timelineTrackClips(draft, selectedTrackClip.trackName).find(
+        (clip) => clip.id === selectedTrackClip.clipId,
+      ) ?? null
+    : null;
   const updateSegment = (
     segmentId: string,
     patch: Partial<TimelineSegment>,
@@ -23318,6 +23428,34 @@ function TimelineEditorPanel(props: {
       },
     });
   };
+  const updateTrackClip = (
+    trackName: string,
+    clipId: string,
+    patch: Partial<TimelineTrackClip>,
+  ) => {
+    setDraft((current) => {
+      if (!current?.tracks) {
+        return current;
+      }
+      const clips = timelineTrackClips(current, trackName);
+      const nextClips = clips.map((clip) => {
+        if (clip.id !== clipId) {
+          return clip;
+        }
+        const next = { ...clip, ...patch };
+        const startMs = Number(next.start_ms ?? 0);
+        const endMs = Number(next.end_ms ?? startMs);
+        return {
+          ...next,
+          duration_ms: Math.max(0, endMs - startMs),
+        };
+      });
+      return {
+        ...current,
+        tracks: { ...current.tracks, [trackName]: nextClips },
+      };
+    });
+  };
   const validDraft = Boolean(
     draft?.transcript_version_id &&
     segments.length > 0 &&
@@ -23338,7 +23476,100 @@ function TimelineEditorPanel(props: {
       {!draft ? (
         <div className="emptyState">No editable timeline asset.</div>
       ) : (
-        <div className="timelineEditor">
+        <>
+          <div className="timelineLanes" aria-label="Parallel directing timeline">
+            {DIRECTING_TRACK_LANES.map(([trackName, label]) => {
+              const clips = timelineTrackClips(draft, trackName);
+              const durationMs = Math.max(1, Number(draft.duration_ms ?? 0));
+              return (
+                <div className="timelineLane" key={trackName}>
+                  <strong>{label}</strong>
+                  <div className="timelineLaneRail">
+                    {clips.map((clip) => {
+                      const left = Math.max(0, (Number(clip.start_ms) / durationMs) * 100);
+                      const width = Math.max(
+                        0.75,
+                        ((Number(clip.end_ms) - Number(clip.start_ms)) / durationMs) *
+                          100,
+                      );
+                      return (
+                        <button
+                          aria-label={`${label} clip ${clip.id}`}
+                          className={`timelineLaneClip ${
+                            selectedTrackClip?.trackName === trackName &&
+                            selectedTrackClip.clipId === clip.id
+                              ? "selected"
+                              : ""
+                          }`}
+                          key={clip.id}
+                          onClick={() => {
+                            setSelectedTrackClip({ trackName, clipId: clip.id });
+                            if (clip.linked_segment_id) {
+                              setSelectedSegmentId(clip.linked_segment_id);
+                            }
+                          }}
+                          style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%` }}
+                          title={`${clip.id} · ${clip.start_ms}-${clip.end_ms}ms`}
+                        >
+                          {clip.participant_id ?? clip.speaker_participant_id ?? clip.id}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {selectedTrackClip && selectedClip ? (
+            <div className="timelineClipEditor">
+              <strong>
+                {selectedTrackClip.trackName} · {selectedClip.id}
+              </strong>
+              <label className="field">
+                <span>Clip start ms</span>
+                <input
+                  min={0}
+                  onChange={(event) =>
+                    updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
+                      start_ms: Number(event.target.value),
+                    })
+                  }
+                  type="number"
+                  value={selectedClip.start_ms}
+                />
+              </label>
+              <label className="field">
+                <span>Clip end ms</span>
+                <input
+                  min={0}
+                  onChange={(event) =>
+                    updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
+                      end_ms: Number(event.target.value),
+                    })
+                  }
+                  type="number"
+                  value={selectedClip.end_ms}
+                />
+              </label>
+              <label className="field">
+                <span>Source in ms</span>
+                <input
+                  min={0}
+                  onChange={(event) =>
+                    updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
+                      source_in_ms: Number(event.target.value),
+                    })
+                  }
+                  type="number"
+                  value={Number(selectedClip.source_in_ms ?? 0)}
+                />
+              </label>
+              <button className="secondaryButton" onClick={() => setSelectedTrackClip(null)}>
+                Close clip editor
+              </button>
+            </div>
+          ) : null}
+          <div className="timelineEditor">
           <div className="timelineSceneList">
             {segments.map((segment, index) => (
               <button
@@ -23475,7 +23706,8 @@ function TimelineEditorPanel(props: {
               <div className="emptyState">No scene selected.</div>
             )}
           </div>
-        </div>
+          </div>
+        </>
       )}
       <div className="editorActions">
         <button

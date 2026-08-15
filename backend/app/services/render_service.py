@@ -209,6 +209,7 @@ class RenderService:
         if is_talkshow_timeline:
             self._ensure_timeline_integrity_passes(episode, timeline_asset)
             self._ensure_studio_camera_renderable(episode, timeline)
+        render_timeline = self._timeline_render_view(timeline)
         existing = self._latest_render_asset(episode, timeline_asset, request, preset)
         queued_asset = self._queued_render_asset(
             episode,
@@ -254,6 +255,8 @@ class RenderService:
             request=request,
             render_id=render_id,
         )
+        if isinstance(render_timeline.get("render_materialization"), dict):
+            manifest["parallel_track_render_view"] = render_timeline["render_materialization"]
         manifest_payload = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")
         stored_manifest = self.object_store.put_bytes(
             key=f"renders/{episode.id}/{render_id}.manifest.json",
@@ -263,7 +266,7 @@ class RenderService:
 
         media_bytes = self._render_media_bytes(
             episode,
-            timeline,
+            render_timeline,
             preset,
             manifest,
             request.render_type,
@@ -448,9 +451,8 @@ class RenderService:
     @staticmethod
     def _compact_replaced_production_manifest_assets(episode: Episode) -> None:
         for asset in episode.assets:
-            if (
-                asset.asset_type != AssetType.production_manifest
-                or not isinstance(asset.generation_metadata, dict)
+            if asset.asset_type != AssetType.production_manifest or not isinstance(
+                asset.generation_metadata, dict
             ):
                 continue
             asset.status = "replaced"
@@ -465,6 +467,196 @@ class RenderService:
                 "package_asset_id": asset.source_entity_id,
                 "stored_immutably": bool(asset.storage_uri and asset.checksum),
             }
+
+    def _timeline_render_view(self, timeline: dict) -> dict:
+        """Materialize parallel B-roll only for the FFmpeg render boundary.
+
+        The persisted v3 timeline retains one uninterrupted dialogue segment.
+        Rendering may divide that interval at presentation boundaries, while
+        carrying dialogue and source offsets forward deterministically.
+        """
+        tracks = timeline.get("tracks")
+        if not isinstance(tracks, dict):
+            return timeline
+        content_clips = [clip for clip in tracks.get("broll_content", []) if isinstance(clip, dict)]
+        presentation_clips = [
+            clip for clip in tracks.get("broll_presentation", []) if isinstance(clip, dict)
+        ]
+        if not content_clips or not presentation_clips:
+            return timeline
+        content_by_id = {str(clip.get("id")): clip for clip in content_clips if clip.get("id")}
+        render_segments: list[dict] = []
+        for segment in timeline.get("segments", []):
+            if not isinstance(segment, dict):
+                continue
+            segment_start = int(segment.get("start_ms") or 0)
+            segment_end = int(segment.get("end_ms") or 0)
+            overlapping = [
+                clip
+                for clip in presentation_clips
+                if int(clip.get("start_ms") or 0) < segment_end
+                and int(clip.get("end_ms") or 0) > segment_start
+                and str(clip.get("linked_segment_id") or "") in {"", str(segment.get("id") or "")}
+            ]
+            if not overlapping:
+                render_segments.append(segment)
+                continue
+            boundaries = {segment_start, segment_end}
+            for clip in overlapping:
+                boundaries.add(max(segment_start, int(clip.get("start_ms") or 0)))
+                boundaries.add(min(segment_end, int(clip.get("end_ms") or 0)))
+                for keyframe in clip.get("keyframes", []):
+                    if isinstance(keyframe, dict):
+                        time_ms = int(keyframe.get("time_ms") or 0)
+                        if segment_start < time_ms < segment_end:
+                            boundaries.add(time_ms)
+            ordered = sorted(boundaries)
+            for piece_index, (piece_start, piece_end) in enumerate(
+                zip(ordered, ordered[1:], strict=False), start=1
+            ):
+                if piece_end <= piece_start:
+                    continue
+                active = next(
+                    (
+                        clip
+                        for clip in overlapping
+                        if int(clip.get("start_ms") or 0) <= piece_start
+                        and int(clip.get("end_ms") or 0) >= piece_end
+                    ),
+                    None,
+                )
+                piece = self._timeline_render_piece(
+                    segment=segment,
+                    piece_index=piece_index,
+                    start_ms=piece_start,
+                    end_ms=piece_end,
+                )
+                if active is not None:
+                    content = content_by_id.get(str(active.get("content_clip_id") or ""))
+                    if content is not None:
+                        piece = self._apply_parallel_broll_to_piece(
+                            piece=piece,
+                            presentation=active,
+                            content=content,
+                            piece_start_ms=piece_start,
+                        )
+                render_segments.append(piece)
+        return {
+            **timeline,
+            "segments": render_segments,
+            "render_materialization": {
+                "schema_version": "dialecticore.parallel_track_render_view.v1",
+                "source_segment_count": len(timeline.get("segments", [])),
+                "render_segment_count": len(render_segments),
+                "broll_content_clip_count": len(content_clips),
+                "broll_presentation_clip_count": len(presentation_clips),
+                "source_clock_preserved": True,
+            },
+        }
+
+    def _timeline_render_piece(
+        self,
+        *,
+        segment: dict,
+        piece_index: int,
+        start_ms: int,
+        end_ms: int,
+    ) -> dict:
+        relative_start_ms = start_ms - int(segment.get("start_ms") or 0)
+        source_base_ms = int(
+            segment.get("source_start_ms") or segment.get("audio_source_offset_ms") or 0
+        )
+        return {
+            **segment,
+            "id": f"{segment.get('id')}-render-{piece_index:02d}",
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+            "duration_ms": end_ms - start_ms,
+            "audio_source_offset_ms": int(segment.get("audio_source_offset_ms") or 0)
+            + relative_start_ms,
+            "source_start_ms": source_base_ms + relative_start_ms,
+            "source_end_ms": source_base_ms + relative_start_ms + end_ms - start_ms,
+            "graphics": segment.get("graphics", []) if relative_start_ms == 0 else [],
+            "citations": segment.get("citations", []) if relative_start_ms == 0 else [],
+            "citation_overlay_asset_ids": (
+                segment.get("citation_overlay_asset_ids", []) if relative_start_ms == 0 else []
+            ),
+        }
+
+    def _apply_parallel_broll_to_piece(
+        self,
+        *,
+        piece: dict,
+        presentation: dict,
+        content: dict,
+        piece_start_ms: int,
+    ) -> dict:
+        asset_id = str(content.get("asset_id") or "")
+        if not asset_id:
+            return piece
+        state = "rear_screen"
+        for keyframe in sorted(
+            (item for item in presentation.get("keyframes", []) if isinstance(item, dict)),
+            key=lambda item: int(item.get("time_ms") or 0),
+        ):
+            if int(keyframe.get("time_ms") or 0) <= piece_start_ms:
+                state = str(keyframe.get("state") or state)
+        content_source_start_ms = int(content.get("source_in_ms") or 0) + max(
+            0, piece_start_ms - int(content.get("start_ms") or 0)
+        )
+        layer = {
+            "role": "wall_screen_broll" if state == "rear_screen" else "broll",
+            "asset_id": asset_id,
+            "purpose": (
+                "parallel_rear_screen_playback"
+                if state == "rear_screen"
+                else "parallel_fullscreen_playback"
+            ),
+            "source_start_ms": content_source_start_ms,
+            "source_end_ms": content_source_start_ms + int(piece["duration_ms"]),
+            "content_clip_id": content.get("id"),
+            "presentation_clip_id": presentation.get("id"),
+        }
+        if state == "fullscreen":
+            return {
+                **piece,
+                "segment_type": "discussion_parallel_broll_fullscreen",
+                "video_asset_id": asset_id,
+                "secondary_visual_asset_id": asset_id,
+                "visual_role": "broll",
+                "visual_layers": [layer],
+                "camera_transition": "dissolve",
+                "direction": {
+                    **(piece.get("direction") or {}),
+                    "action": "dissolve",
+                    "speaker_mouth_mode": "off_camera_dialogue",
+                },
+                "broll_playback": {
+                    "state": state,
+                    "content_clip_id": content.get("id"),
+                    "presentation_clip_id": presentation.get("id"),
+                    "source_start_ms": content_source_start_ms,
+                },
+            }
+        base_layers = [
+            existing
+            for existing in piece.get("visual_layers", [])
+            if isinstance(existing, dict) and existing.get("role") != "wall_screen_broll"
+        ]
+        return {
+            **piece,
+            "segment_type": "discussion_parallel_broll_rear_screen",
+            "secondary_visual_asset_id": asset_id,
+            "wall_screen_visual_asset_id": asset_id,
+            "visual_layers": [*base_layers, layer],
+            "camera_transition": "broll_insert",
+            "broll_playback": {
+                "state": state,
+                "content_clip_id": content.get("id"),
+                "presentation_clip_id": presentation.get("id"),
+                "source_start_ms": content_source_start_ms,
+            },
+        }
 
     def _ensure_studio_camera_renderable(self, episode: Episode, timeline: dict) -> None:
         asset_by_id = {str(asset.id): asset for asset in episode.assets}
@@ -564,11 +756,10 @@ class RenderService:
         # Hand-authored legacy timelines predate the studio composition contract.
         # Generated studio timelines always carry this policy and must have a
         # passing integrity result before the renderer can consume them.
-        if (
-            not isinstance(media, dict)
-            or media.get("composition_policy")
-            not in {"studio_camera_cuts.v1", "seated_studio_panel.v1"}
-        ):
+        if not isinstance(media, dict) or media.get("composition_policy") not in {
+            "studio_camera_cuts.v1",
+            "seated_studio_panel.v1",
+        }:
             return
         result = next(
             (
@@ -1003,6 +1194,12 @@ class RenderService:
             segment for segment in timeline.get("segments", []) if isinstance(segment, dict)
         ]
         planned_segments = segments
+        render_materialization = timeline.get("render_materialization")
+        source_segment_count = (
+            int(render_materialization.get("source_segment_count") or len(segments))
+            if isinstance(render_materialization, dict)
+            else len(segments)
+        )
         visual_asset_ids = [
             asset_id
             for segment in planned_segments
@@ -1223,9 +1420,7 @@ class RenderService:
             and layer["transition_policy"].get("duration_ms", 0) > 0
         )
         studio_context_segment_count = sum(
-            1
-            for layer in segment_layers
-            if self._composition_layer_has_studio_context(layer)
+            1 for layer in segment_layers if self._composition_layer_has_studio_context(layer)
         )
         post_primer_host_bridge_segment_count = sum(
             1
@@ -1236,8 +1431,10 @@ class RenderService:
             "schema_version": "scene_composition.v2",
             "policy": "studio_camera_cuts.v1",
             "mode": f"timeline_scene_composite_{render_type}",
-            "segment_count": len(planned_segments),
-            "source_segment_count": len(segments),
+            "segment_count": source_segment_count,
+            "source_segment_count": source_segment_count,
+            "render_segment_count": len(planned_segments),
+            "parallel_track_materialized": isinstance(render_materialization, dict),
             "generated_base_video": resolved_visual_plate_layer_count == 0,
             "generated_silent_audio": True,
             "visual_asset_count": len(visual_asset_ids),
@@ -1451,16 +1648,11 @@ class RenderService:
             for visual_layer in layer.get("visual_layers", [])
             if isinstance(visual_layer, dict) and visual_layer.get("resolved")
         ]
-        if any(
-            visual_layer.get("role") == "studio_scene"
-            for visual_layer in visual_layers
-        ):
+        if any(visual_layer.get("role") == "studio_scene" for visual_layer in visual_layers):
             return True
         layout_policy = layer.get("layout_policy")
         layout_name = (
-            str(layout_policy.get("name") or "")
-            if isinstance(layout_policy, dict)
-            else ""
+            str(layout_policy.get("name") or "") if isinstance(layout_policy, dict) else ""
         )
         return layout_name in {
             "seated_panel_full_frame",
@@ -1487,10 +1679,10 @@ class RenderService:
             and direction.get("speaker_mouth_mode") == "audio_driven_seated_panel"
         ):
             rear_screen_cutaway = "wall_screen_broll" in roles
-            virtual_camera = (
-                not rear_screen_cutaway
-                and camera_view not in {"", "establishing_wide"}
-            )
+            virtual_camera = not rear_screen_cutaway and camera_view not in {
+                "",
+                "establishing_wide",
+            }
             return {
                 "name": (
                     "seated_panel_rear_screen_cutaway"
@@ -1502,15 +1694,12 @@ class RenderService:
                 "schema_version": "visual_layout_policy.v1",
                 "complexity": "native_scene",
                 "screen_mode": "full_frame",
-                "focus_role": (
-                    "wall_screen_broll" if rear_screen_cutaway else "video_primary"
-                ),
+                "focus_role": ("wall_screen_broll" if rear_screen_cutaway else "video_primary"),
                 "composition_rules": [
                     (
                         "composite source-bound media inside the measured rear-screen safe region"
                         if rear_screen_cutaway
-                        else
-                        "apply the configured virtual camera crop to the B1-generated "
+                        else "apply the configured virtual camera crop to the B1-generated "
                         "seated studio frame"
                         if virtual_camera
                         else "preserve the B1-generated seated studio frame unchanged"
@@ -1620,8 +1809,10 @@ class RenderService:
         direction = segment.get("direction")
         direction_action = direction.get("action") if isinstance(direction, dict) else None
         camera_action = str(direction_action or segment.get("camera_action") or "")
-        transition = camera_action if camera_action not in {"", "cut"} else str(
-            segment.get("camera_transition") or "cut"
+        transition = (
+            camera_action
+            if camera_action not in {"", "cut"}
+            else str(segment.get("camera_transition") or "cut")
         )
         policies = {
             "dissolve": {
@@ -1708,8 +1899,7 @@ class RenderService:
             "source_transition": transition,
             "scene_index": index,
             "applies_to": ["scene_plate", "visual_overlays"],
-            "whole_scene_fade": segment.get("segment_type")
-            != "discussion_wall_screen_insert",
+            "whole_scene_fade": segment.get("segment_type") != "discussion_wall_screen_insert",
             "terminal_fade_out_ms": max(0, terminal_fade_out_ms),
             **policy,
         }
@@ -1764,10 +1954,14 @@ class RenderService:
         layout_name: str,
         preset: RenderPreset,
     ) -> dict:
-        if layout_name in {
-            "seated_panel_full_frame",
-            "seated_panel_virtual_camera",
-        } and role == "video_primary":
+        if (
+            layout_name
+            in {
+                "seated_panel_full_frame",
+                "seated_panel_virtual_camera",
+            }
+            and role == "video_primary"
+        ):
             return self._layout_slot(
                 "seated_panel_full_frame", 0, 0, preset.width, preset.height, 0
             )
@@ -2122,6 +2316,8 @@ class RenderService:
                             "purpose": layer.get("purpose"),
                             "reference_only": True,
                             "embedded_in_primary": layer.get("embedded_in_primary") is True,
+                            "source_start_ms": layer.get("source_start_ms"),
+                            "source_end_ms": layer.get("source_end_ms"),
                         }
                     )
                     continue
@@ -2139,6 +2335,8 @@ class RenderService:
                         "character_reference_image_uri": layer.get("character_reference_image_uri"),
                         "character_reference_images": layer.get("character_reference_images", {}),
                         "embedded_in_primary": layer.get("embedded_in_primary") is True,
+                        "source_start_ms": layer.get("source_start_ms"),
+                        "source_end_ms": layer.get("source_end_ms"),
                     }
                 )
         if layers:
@@ -2823,6 +3021,8 @@ class RenderService:
                     "storage_uri": reference.get("storage_uri"),
                     "mime_type": reference.get("mime_type"),
                     "layout_slot": reference.get("layout_slot"),
+                    "source_start_ms": self._optional_int(reference.get("source_start_ms")) or 0,
+                    "source_end_ms": self._optional_int(reference.get("source_end_ms")),
                 }
             )
         if not layers:
@@ -2832,9 +3032,7 @@ class RenderService:
             {
                 "asset_id": str(layer["asset"].id) if layer["asset"] is not None else None,
                 "asset_type": (
-                    layer["asset"].asset_type.value
-                    if layer["asset"] is not None
-                    else "image"
+                    layer["asset"].asset_type.value if layer["asset"] is not None else "image"
                 ),
                 "storage_uri": (
                     layer["asset"].storage_uri
@@ -2842,7 +3040,7 @@ class RenderService:
                     else layer.get("storage_uri")
                 ),
                 "mime_type": (
-                layer["asset"].mime_type
+                    layer["asset"].mime_type
                     if layer["asset"] is not None
                     else layer.get("mime_type") or self._mime_type_for_path(layer["path"])
                 ),
@@ -2972,9 +3170,9 @@ class RenderService:
         still_motion: str = "push_in",
         virtual_camera: dict | None = None,
     ) -> Path:
-        if (
-            asset is not None and (asset.mime_type or "").startswith("image/")
-        ) or (asset is None and self._mime_type_for_path(source_path).startswith("image/")):
+        if (asset is not None and (asset.mime_type or "").startswith("image/")) or (
+            asset is None and self._mime_type_for_path(source_path).startswith("image/")
+        ):
             return self._image_visual_piece_path(
                 source_path=source_path,
                 directory=directory,
@@ -3013,9 +3211,7 @@ class RenderService:
         for layer in layers:
             asset = layer.get("asset")
             path = layer["path"]
-            is_image = (
-                asset is not None and (asset.mime_type or "").startswith("image/")
-            ) or (
+            is_image = (asset is not None and (asset.mime_type or "").startswith("image/")) or (
                 asset is None
                 and str(layer.get("mime_type") or self._mime_type_for_path(path)).startswith(
                     "image/"
@@ -3024,7 +3220,17 @@ class RenderService:
             if is_image:
                 command.extend(["-loop", "1", "-i", str(path)])
             else:
-                command.extend(["-stream_loop", "-1", "-i", str(path)])
+                source_start_ms = int(layer.get("source_start_ms") or 0)
+                command.extend(
+                    [
+                        "-stream_loop",
+                        "-1",
+                        "-ss",
+                        f"{max(0, source_start_ms) / 1000:.3f}",
+                        "-i",
+                        str(path),
+                    ]
+                )
 
         filter_parts = [f"[0:v]{self._visual_normalization_filter(preset)}[v0]"]
         previous_label = "v0"
@@ -3864,9 +4070,7 @@ class RenderService:
         primary = asset_by_id.get(str(segment.get("video_asset_id") or ""))
         if (
             primary is not None
-            and primary.generation_metadata.get(
-                "provider_studio_panel_camera_composition"
-            )
+            and primary.generation_metadata.get("provider_studio_panel_camera_composition")
             == "native_scene_camera"
         ):
             # B1 already rendered the configured speaker/two-shot framing.
@@ -3894,8 +4098,12 @@ class RenderService:
             participant_ids=participant_ids,
             seating_plan=shot_plan.get("seating_plan"),
         )
-        focus_x = sum(position[0] for position in positions) / len(positions)
-        focus_y = sum(position[1] for position in positions) / len(positions)
+        # Speaker shots are composed around the active speaker.  A paired
+        # participant is useful framing context, but averaging both faces makes
+        # the speaker land at the edge of the crop and can make the silent face
+        # more prominent.  Preserve the pair in metadata while anchoring the
+        # camera on the first (speaker) position.
+        focus_x, focus_y = positions[0]
         scale_by_view = {
             "panel_two_shot": 1.24,
             "speaker_medium": 1.48,
@@ -3907,13 +4115,27 @@ class RenderService:
             scale *= 1.04
         if scale <= 1.0:
             return None
+        normalized_pair_ids = [
+            participant_id
+            for participant_id in participant_ids[1:]
+            if participant_id and participant_id != speaker_id
+        ]
         return {
-            "schema_version": "dialecticore.virtual_camera.v1",
+            "schema_version": "dialecticore.virtual_camera.v2",
             "view": view,
             "scale": round(scale, 4),
             "focus_x": round(min(0.96, max(0.04, focus_x)), 5),
             "focus_y": round(min(0.92, max(0.08, focus_y)), 5),
-            "focus_source": "b1_normalized_face_region_or_seating_plan",
+            "focus_source": "active_speaker_face_region_or_seating_plan",
+            "speaker_participant_id": speaker_id or None,
+            "context_participant_ids": normalized_pair_ids,
+            "framing_policy": {
+                "speaker_target_frame_x": 0.5,
+                "speaker_allowed_frame_x": [0.45, 0.55],
+                "speaker_must_be_primary": True,
+                "retain_head_shoulders": True,
+                "retain_desk_context": True,
+            },
         }
 
     def _seated_panel_focus_positions(
@@ -3998,12 +4220,8 @@ class RenderService:
                 if 0 <= center_x <= 1 and 0 <= center_y <= 1:
                     return center_x, center_y
                 continue
-            x = self._optional_float(
-                region.get("x") if "x" in region else region.get("left")
-            )
-            y = self._optional_float(
-                region.get("y") if "y" in region else region.get("top")
-            )
+            x = self._optional_float(region.get("x") if "x" in region else region.get("left"))
+            y = self._optional_float(region.get("y") if "y" in region else region.get("top"))
             width = self._optional_float(
                 region.get("width") if "width" in region else region.get("w")
             )
@@ -4377,11 +4595,7 @@ class RenderService:
     def _thumbnail_seek_seconds(render_asset: Asset) -> float:
         manifest = render_asset.generation_metadata.get("render_manifest")
         composition = manifest.get("composition") if isinstance(manifest, dict) else None
-        layers = (
-            composition.get("segment_layers")
-            if isinstance(composition, dict)
-            else None
-        )
+        layers = composition.get("segment_layers") if isinstance(composition, dict) else None
         if isinstance(layers, list):
             for layer in layers:
                 if not isinstance(layer, dict):
@@ -4393,9 +4607,7 @@ class RenderService:
                     continue
                 start_ms = layer.get("start_ms")
                 duration_ms = layer.get("duration_ms")
-                if isinstance(start_ms, (int, float)) and isinstance(
-                    duration_ms, (int, float)
-                ):
+                if isinstance(start_ms, (int, float)) and isinstance(duration_ms, (int, float)):
                     return round((start_ms + duration_ms / 2) / 1000, 3)
 
         duration_ms = render_asset.duration_ms
@@ -5243,9 +5455,7 @@ class RenderService:
             for segment in timeline.get("segments", [])
             if isinstance(segment, dict) and segment.get("segment_type") == "topic_primer"
         )
-        episode_maximum_duration_ms = (
-            discussion_maximum_duration_ms + topic_primer_duration_ms
-        )
+        episode_maximum_duration_ms = discussion_maximum_duration_ms + topic_primer_duration_ms
         target_duration_ms = int(episode.target_duration_seconds * 1000)
         final_runtime_within_episode_bounds = None
         if render_type == "final" and duration_ms is not None:
@@ -5383,10 +5593,13 @@ class RenderService:
                         "issue": "render_studio_context_missing",
                     }
                 )
-            if any(
-                isinstance(segment, dict) and segment.get("segment_type") == "topic_primer"
-                for segment in timeline.get("segments", [])
-            ) and int(composition.get("post_primer_host_bridge_segment_count") or 0) == 0:
+            if (
+                any(
+                    isinstance(segment, dict) and segment.get("segment_type") == "topic_primer"
+                    for segment in timeline.get("segments", [])
+                )
+                and int(composition.get("post_primer_host_bridge_segment_count") or 0) == 0
+            ):
                 issues.append(
                     {
                         "severity": "fail",
@@ -5425,9 +5638,7 @@ class RenderService:
                 "av_offset_ms": probe.get("av_offset_ms"),
                 "composition_policy": composition_policy,
                 "target_duration_ms": target_duration_ms,
-                "full_program_target_duration_ms": (
-                    target_duration_ms + topic_primer_duration_ms
-                ),
+                "full_program_target_duration_ms": (target_duration_ms + topic_primer_duration_ms),
                 "minimum_duration_ms": episode_minimum_duration_ms,
                 "maximum_duration_ms": episode_maximum_duration_ms,
                 "discussion_maximum_duration_ms": discussion_maximum_duration_ms,
