@@ -48,7 +48,7 @@ retained when supplied but are optional and never block editing or rendering.
 - [x] (2026-08-15 13:42Z) Added and verified an idempotent Production v2 finalizer that transcodes the exact approved composite to 1920x1080 at 30 fps, records source-preview checksum and approval provenance, accepts the reviewed 364.333-second programme as this episode's 365-second ceiling, performs a full decode/probe check, and creates a fresh final-review approval.
 - [x] (2026-08-15 13:50Z) Human-approved the corrected provenance-bound 1080p final render in the dashboard; its exact checksum remains linked to approved preview revision 5.
 - [x] (2026-08-15 14:50Z) Created and visually qualified the delivery thumbnail, corrected selectable-caption discovery, exported and inspected the four-file YouTube package, generated the production manifest, and completed a mock YouTube dry-run publish. Created and dry-run validated a full database/object-store/runtime archive, restarted only the four DialectiCore user services, and verified exact artifact checksums, healthy workers, package inspection, and ranged download persistence; no live publication occurred.
-- [ ] Commit and push intentional checkpoints, obtain green CI, verify deployed/local/remote source provenance, and record exact v2 artifacts and limitations.
+- [x] (2026-08-15 14:54Z) Committed and pushed the delivery implementation as `864490051d56746d5a093745243922a5db8fb9fe`; GitHub CI run `31891041213` passed backend, frontend, and Compose jobs. Recorded exact v2 artifacts, recovery evidence, the dry-run-only publication boundary, and source provenance.
 
 ## Surprises & Discoveries
 
@@ -658,3 +658,8 @@ selection, explicit-caption packaging repair, the inspected four-file package,
 manifest refresh, dry-run-only publisher evidence, full archive validation, and
 post-restart artifact persistence. The first timed-out backup remains negative
 evidence; only the fresh validated archive is the delivery recovery baseline.
+
+Plan update note (2026-08-15 14:54Z): Closed the implementation after delivery
+commit `864490051d56746d5a093745243922a5db8fb9fe` passed GitHub CI run
+`31891041213`. All planned Production v2 work is complete through a recoverable
+dry-run delivery; an actual publisher upload remains a separate explicit act.
