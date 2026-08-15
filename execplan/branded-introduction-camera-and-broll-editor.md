@@ -39,6 +39,7 @@ the managed B1 scheduler API.
 - [x] (2026-08-15 19:35Z) Reproduced the timeline-trimming usability failure in Chromium without saving: source cards report `00:00.000`, a new five-second clip is only a few pixels wide in a 364-second Fit view, and the inspector exposes four unexplained millisecond fields.
 - [x] (2026-08-15 19:52Z) Corrected browser media-duration discovery and source-aware edge trimming, added deterministic playhead trim actions and focus-selected zoom, and replaced the raw inspector with a guided clip/source-time workflow.
 - [x] (2026-08-15 19:55Z) Validated pointer, playhead, preview-source, keyboard, undo/redo, linked-presentation, reload, build, and accessibility behavior in tests and Chromium without saving or modifying accepted media assets.
+- [x] (2026-08-15 20:01Z) Committed and pushed `17cda8fc6695e50630bdb1a542a948a7e6d5c802`; GitHub CI run `31905346193` passed Compose, frontend, backend lint, and the complete backend test suite.
 
 ## Surprises & Discoveries
 
@@ -348,6 +349,9 @@ zoom. Chromium evidence is in
 `output/playwright/timeline-after-usability-fix-draft.png`, and
 `output/playwright/timeline-trim-inspector-final.png`; the final live snapshot
 reported a valid timeline and 32x focus without the misleading video fallback.
+Implementation commit `17cda8f` is published on `origin/main`; GitHub CI run
+`31905346193` completed successfully (Compose 6 seconds, frontend 24 seconds,
+backend 3 minutes 51 seconds).
 
 ## Interfaces and Dependencies
 
@@ -389,3 +393,6 @@ Plan change note (2026-08-15 19:55Z): recorded the completed clipping-usability
 repair, source-clock semantics, 108-test/build result, real Chromium pointer and
 keyboard evidence, and confirmation that the browser-only qualification draft was
 not saved.
+
+Plan change note (2026-08-15 20:01Z): recorded the published implementation commit
+and successful terminal GitHub CI evidence.
