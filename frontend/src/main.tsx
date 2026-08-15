@@ -81,6 +81,7 @@ import {
 import { pilotReadinessAction } from "./pilotReadinessActions";
 import { productionReportActionRows } from "./productionReportActionRows";
 import { productionReportOperatorActionSummary } from "./productionReportOperatorActions";
+import { activeManagedMediaJobCount } from "./productionActivity";
 import { canRenderFinal, canRenderPreview } from "./renderGates";
 import {
   positiveDurationMs,
@@ -23189,12 +23190,14 @@ function EpisodeProductionActivityPanel(props: {
   const failedDirectedJobs = directedAssets.filter((asset) =>
     ["failed", "error", "cancelled"].includes(asset.status),
   ).length;
-  const remoteMediaJobs =
+  const managedRemoteMediaJobs = activeManagedMediaJobCount(props.episode?.assets);
+  const legacyRemoteMediaJobs =
     progress.audio.submitted +
     progress.audio.running +
     progress.visuals.submitted +
     progress.visuals.running +
     submittedDirectedJobs;
+  const remoteMediaJobs = Math.max(managedRemoteMediaJobs, legacyRemoteMediaJobs);
   const plannedMediaJobs =
     progress.audio.planned + progress.visuals.planned + plannedDirectedJobs;
   const currentRender = reviewRender ?? renderInProgress ?? finalRender ?? preview;
@@ -23220,7 +23223,7 @@ function EpisodeProductionActivityPanel(props: {
     nextAction = "Wait for the render to complete, then review it.";
   } else if (remoteMediaJobs > 0) {
     label = "B1 media in progress";
-    detail = "B1 speech, talking-head, or studio-directed camera jobs are submitted or rendering.";
+    detail = "B1 speech, talking-head, seated-character, or studio-directed camera jobs are submitted or rendering.";
     statusClass = "ready";
     nextAction = "Wait for the B1 jobs to complete.";
   } else if (plannedMediaJobs > 0) {
@@ -23252,7 +23255,7 @@ function EpisodeProductionActivityPanel(props: {
     ? `${formatPrimerTimestamp(plannedDurationMs)} planned timeline`
     : "No current timeline";
   const b1Summary = remoteMediaJobs > 0
-    ? `${productionCounter(progress.audio, progress.turnCount)} speech · ${productionCounter(progress.visuals, progress.turnCount)} clips · ${submittedDirectedJobs} directed`
+    ? `${managedRemoteMediaJobs || remoteMediaJobs} B1 jobs · ${productionCounter(progress.audio, progress.turnCount)} speech · ${productionCounter(progress.visuals, progress.turnCount)} clips · ${submittedDirectedJobs} directed`
     : plannedMediaJobs > 0
       ? `${productionCounter(progress.audio, progress.turnCount)} speech · ${productionCounter(progress.visuals, progress.turnCount)} clips planned, not submitted`
       : "No speech, character-animation, or directed-media jobs queued";
