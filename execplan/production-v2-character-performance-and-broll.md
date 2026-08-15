@@ -46,7 +46,8 @@ retained when supplied but are optional and never block editing or rendering.
 - [x] (2026-08-15 13:30Z) Human-approved preview revision 5 after extending the render/UI gates to recognize both `studio_camera_cuts.v1` and the virtual-camera `studio_camera_cuts.v2` policy; the decision is recorded against the exact reviewed checksum.
 - [x] (2026-08-15 13:35Z) Exercised the generic 1080p final-render path, detected that it flattened the approved studio composite into full-frame speaker clips, and rejected that derivative through the normal final-review gate. The approved preview remains canonical and untouched.
 - [x] (2026-08-15 13:42Z) Added and verified an idempotent Production v2 finalizer that transcodes the exact approved composite to 1920x1080 at 30 fps, records source-preview checksum and approval provenance, accepts the reviewed 364.333-second programme as this episode's 365-second ceiling, performs a full decode/probe check, and creates a fresh final-review approval.
-- [ ] Human-approve the corrected final render, then create the thumbnail, package, manifest, dry-run publish record, and recovery test without replacing v1.
+- [x] (2026-08-15 13:50Z) Human-approved the corrected provenance-bound 1080p final render in the dashboard; its exact checksum remains linked to approved preview revision 5.
+- [x] (2026-08-15 14:50Z) Created and visually qualified the delivery thumbnail, corrected selectable-caption discovery, exported and inspected the four-file YouTube package, generated the production manifest, and completed a mock YouTube dry-run publish. Created and dry-run validated a full database/object-store/runtime archive, restarted only the four DialectiCore user services, and verified exact artifact checksums, healthy workers, package inspection, and ranged download persistence; no live publication occurred.
 - [ ] Commit and push intentional checkpoints, obtain green CI, verify deployed/local/remote source provenance, and record exact v2 artifacts and limitations.
 
 ## Surprises & Discoveries
@@ -204,6 +205,26 @@ retained when supplied but are optional and never block editing or rendering.
   Evidence: rejected render `fd95bbb9-b681-4c49-9037-c81a77cbbd34` failed
   deterministic final QC with `render_studio_context_missing`; its manifest
   reports 21 `full_frame_primary` scenes and zero studio-context segments.
+- Observation: automatic thumbnail extraction selected a mid-program crop with
+  part of the cast cut off and an unrelated human dominating the rear screen,
+  despite passing purely technical thumbnail QC.
+  Evidence: automatic thumbnail asset `98bf1985-e38b-4088-b6bc-3035ed4bd3f1`
+  was visually rejected and replaced by the reviewed closing total-studio
+  composition `f6e0a3b1-f22f-4b4d-bbb7-cc3096bbd3f4`.
+- Observation: the first YouTube package omitted the explicit selectable German
+  caption because package discovery followed only generic render-manifest
+  source assets, while the approved-composite final records its caption as
+  `caption_track_asset_id`.
+  Evidence: replaced package `268de3ce-f8dc-46fa-8edc-90966766888f` warned of
+  zero subtitles; corrected package `38fe0c47-86d4-472a-891d-43ab9df97d65`
+  contains `subtitles/de.vtt` and passes inspection without issues.
+- Observation: full object-store backup creation now exceeds the smoke client's
+  fixed 300-second HTTP timeout. Cancellation at that boundary left the first
+  gzip incomplete, and dry-run restore correctly rejected it with an unexpected
+  end-of-stream error.
+  Evidence: the timed-out 2,000,327,751-byte archive failed validation; the
+  retried 4,442,735,703-byte archive completed with a server-produced checksum
+  and validated all 718 requested files when allowed a 1,200-second request.
 
 ## Decision Log
 
@@ -311,6 +332,27 @@ retained when supplied but are optional and never block editing or rendering.
   masks, and virtual camera moves while still producing a provenance-bound
   1080p delivery artifact with normal QC and human approval.
   Date/Author: 2026-08-15 / Codex.
+- Decision: replace the technically valid automatic thumbnail through the
+  audited asset-replacement path with a reviewed closing total-studio frame and
+  restrained title treatment.
+  Rationale: delivery artwork must show the complete cast and actual studio
+  premise clearly; technical dimensions and luminance alone do not establish
+  editorial fitness.
+  Date/Author: 2026-08-15 / Codex.
+- Decision: make package subtitle discovery follow both generic render-manifest
+  source assets and an explicit `caption_track_asset_id`, excluding replaced
+  tracks in either case.
+  Rationale: approved-composite finalization intentionally preserves the
+  selectable caption through explicit provenance and must not lose it at the
+  packaging boundary.
+  Date/Author: 2026-08-15 / Codex.
+- Decision: retain the failed timeout archive as negative recovery evidence and
+  qualify a fresh full archive with a longer client request window rather than
+  interpreting archive creation alone as recovery success.
+  Rationale: only a completed archive that passes the existing `apply=false`
+  restore planner proves that the database, object store, and runtime-state
+  payload are readable together.
+  Date/Author: 2026-08-15 / Codex.
 
 ## Outcomes & Retrospective
 
@@ -322,12 +364,30 @@ and approval `6d87887a-3339-4a8f-9acc-fa48f71568e0` was approved by the user.
 The provenance-bound 1080p delivery render is
 `7d2e95c1-56d2-4840-af59-c83c2a3c17fb`, checksum
 `sha256:c2688f770873d53853b9f2837a3b87b0f305be57d88aa375e257a869db04736c`,
-with final approval `016245f1-d8c2-420c-a901-af5448dbeb8a` pending. Browser
+with final approval `016245f1-d8c2-420c-a901-af5448dbeb8a` approved. Browser
 evidence confirms a playable 364.333-second render, a 134-cue selectable German
 caption track, positive edge-character desk contact, total-studio opening and
 conclusion frames with gentle virtual motion, and an enabled, previewable
 parallel timeline editor. Revisions 1 through 3 remain preserved and explicitly
-superseded rather than overwritten.
+superseded rather than overwritten. The reviewed delivery thumbnail is
+`f6e0a3b1-f22f-4b4d-bbb7-cc3096bbd3f4`, checksum
+`sha256:fa62ba51341be2afb54ba2156de2e08290294476936d05da0bd88aa01e1d4a20`.
+The corrected package is `38fe0c47-86d4-472a-891d-43ab9df97d65`, checksum
+`sha256:69a22a4a04cdc67236de9da3d0f685a76657ee737c8b2e73caa04d477c4ecd4c`,
+and includes the final MP4, thumbnail, German VTT, and package manifest. Current
+production manifest `b6e13ce5-39f8-4995-a512-4fc2c7b68820`, checksum
+`sha256:675418356c92d8a77e8d96b1459b12ea497a8b8c8d26e6133a6a906d4bb4e516`,
+embeds publish job `2d7d5af0-15ae-4c88-89f4-70d28f877efc`; that job completed
+against `mock-youtube` with `dry_run=true`, so no external upload occurred.
+Recovery archive
+`dialecticore-backup-20260815T143526Z-production-v2-delivery-retry-20260815.tar.gz`
+is 4,442,735,703 bytes with SHA-256
+`7c28194f9c894eb9d2b6bd6df093ac3e5b620cfe3108d946cc209304d9bf0312`.
+Its `apply=false` restore plan validated 703 object-store files and 15 runtime
+files. After restarting only the API, Web UI, render worker, and workflow worker,
+all four units were active; both worker roles were healthy, the exact current
+asset checksums and dry-run publish record persisted, package inspection still
+passed, and its download returned a correct 1,024-byte HTTP 206 range.
 
 Transport, normalization, animation selection, active-speaker camera policy,
 parallel directing tracks, render materialization, and the integrated
@@ -345,15 +405,10 @@ The v1 final remains completed with SHA-256
 `1837df46318eba0bd0a21dc60c0d97b5c0236423476401058f3bdfd0278b3218`.
 The user approved revision 2 on 2026-08-15, and the durable gate reads
 `approved_for_full_production`. All 21 full speaking clips completed through
-B1's managed media queue. The full preview is registered as episode
-`9d145344-82c9-46cc-b4c1-661d95f0bf56`; render asset
-`57547bc3-8e51-428f-9fb8-feba96a31eea` has SHA-256
-`cbd77b9312f27bcb99f027e02094ca8e17a55974cf1e4196820178ef3b6db8d0`,
-duration 364.333 seconds, and pending approval
-`ae9b59be-ebd8-485f-b332-6e7c4e984bfe`. Technical QC passes and the browser
-plays the exact registered asset with 134 selectable German cues. Final render,
-thumbnail, package, manifest, dry-run publication, and recovery validation
-remain correctly gated on the user's full-preview review.
+B1's managed media queue. Production v2 is now complete through approved final,
+delivery packaging, dry-run publication, and recovery qualification. Live
+publication remains intentionally outside this plan and requires a separate
+explicit user action.
 
 ## Context and Orientation
 
@@ -597,3 +652,9 @@ Plan update note (2026-08-15 13:43Z): Recorded revision 5 approval, the rejected
 generic final-render experiment, and the corrected approved-composite finalizer.
 The new 1080p artifact preserves the reviewed programme byte lineage, passes
 decode/probe QC, and remains pending human final review before packaging.
+
+Plan update note (2026-08-15 14:50Z): Recorded final approval, visual thumbnail
+selection, explicit-caption packaging repair, the inspected four-file package,
+manifest refresh, dry-run-only publisher evidence, full archive validation, and
+post-restart artifact persistence. The first timed-out backup remains negative
+evidence; only the fresh validated archive is the delivery recovery baseline.

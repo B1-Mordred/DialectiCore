@@ -4798,7 +4798,7 @@ class RenderService:
             "thumbnail_uri": thumbnail_asset.storage_uri if thumbnail_asset else None,
             "thumbnail_checksum": thumbnail_asset.checksum if thumbnail_asset else None,
             "chapters": chapters,
-            "subtitles": self._subtitle_entries(episode, render_manifest),
+            "subtitles": self._subtitle_entries(episode, render_asset),
             "evidence_lineage": evidence_lineage,
             "created_at": datetime.now(UTC).isoformat(),
         }
@@ -6599,27 +6599,39 @@ class RenderService:
         return "bin"
 
     def _subtitle_assets_for_package(self, episode: Episode, render_asset: Asset) -> list[Asset]:
-        manifest = render_asset.generation_metadata.get("render_manifest", {})
-        source_asset_ids = {
-            item.get("asset_id")
-            for item in manifest.get("source_assets", [])
-            if isinstance(item, dict) and item.get("asset_type") == AssetType.subtitle.value
-        }
+        source_asset_ids = self._subtitle_asset_ids_for_render(render_asset)
         return [
             asset
             for asset in episode.assets
-            if str(asset.id) in source_asset_ids and asset.asset_type == AssetType.subtitle
+            if str(asset.id) in source_asset_ids
+            and asset.asset_type == AssetType.subtitle
+            and asset.status != "replaced"
         ]
 
-    def _subtitle_entries(self, episode: Episode, render_manifest: dict) -> list[dict]:
+    @staticmethod
+    def _subtitle_asset_ids_for_render(render_asset: Asset) -> set[str]:
+        manifest = render_asset.generation_metadata.get("render_manifest", {})
         source_asset_ids = {
-            item.get("asset_id")
-            for item in render_manifest.get("source_assets", [])
+            str(item.get("asset_id"))
+            for item in manifest.get("source_assets", [])
             if isinstance(item, dict) and item.get("asset_type") == AssetType.subtitle.value
         }
+        caption_track_asset_id = render_asset.generation_metadata.get(
+            "caption_track_asset_id"
+        )
+        if caption_track_asset_id:
+            source_asset_ids.add(str(caption_track_asset_id))
+        return source_asset_ids
+
+    def _subtitle_entries(self, episode: Episode, render_asset: Asset) -> list[dict]:
+        source_asset_ids = self._subtitle_asset_ids_for_render(render_asset)
         entries = []
         for asset in episode.assets:
-            if str(asset.id) not in source_asset_ids or asset.asset_type != AssetType.subtitle:
+            if (
+                str(asset.id) not in source_asset_ids
+                or asset.asset_type != AssetType.subtitle
+                or asset.status == "replaced"
+            ):
                 continue
             entries.append(
                 {

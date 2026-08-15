@@ -3180,6 +3180,59 @@ def test_youtube_package_qc_fails_when_final_package_omits_required_delivery_med
     ]
 
 
+def test_youtube_package_follows_explicit_selectable_caption_track() -> None:
+    service = RenderService(Settings())
+    episode = EpisodeRepository().create(
+        EpisodeCreateRequest(
+            definition=definition(),
+            participants=default_participants(),
+            model_endpoints=default_model_endpoints(),
+        )
+    )
+    subtitle_asset = Asset(
+        episode_id=episode.id,
+        asset_type=AssetType.subtitle,
+        language="de",
+        source_entity_type="transcript_version",
+        source_entity_id="transcript-test",
+        storage_uri="object://dialecticore/subtitles/de.vtt",
+        mime_type="text/vtt",
+        checksum="sha256:subtitle",
+        status="completed",
+        generation_metadata={"format": "vtt"},
+    )
+    render_asset = Asset(
+        episode_id=episode.id,
+        asset_type=AssetType.render,
+        language="de",
+        source_entity_type="timeline_asset",
+        source_entity_id="timeline-test",
+        storage_uri="object://dialecticore/renders/final.mp4",
+        mime_type="video/mp4",
+        checksum="sha256:render",
+        status="completed",
+        generation_metadata={
+            "render_type": "final",
+            "caption_track_asset_id": str(subtitle_asset.id),
+            "caption_track_mode": "selectable",
+        },
+    )
+    episode.assets.extend([subtitle_asset, render_asset])
+
+    assert service._subtitle_assets_for_package(episode, render_asset) == [
+        subtitle_asset
+    ]
+    assert service._subtitle_entries(episode, render_asset) == [
+        {
+            "asset_id": str(subtitle_asset.id),
+            "language": "de",
+            "format": "vtt",
+            "storage_uri": subtitle_asset.storage_uri,
+            "checksum": subtitle_asset.checksum,
+        }
+    ]
+
+
 def test_youtube_package_qc_fails_when_package_omits_timeline_chapters(
     tmp_path: Path,
 ) -> None:
