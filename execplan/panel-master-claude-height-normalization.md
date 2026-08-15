@@ -20,8 +20,8 @@ Claude as the reference and records the measured height spread.
 - [x] (2026-08-15 23:31Z) Normalized cropped transparent figures to the reference figure height in B1 and added rejecting QC.
 - [x] (2026-08-15 23:38Z) Passed 55 DialectiCore media tests and 103 B1 executor/workflow tests.
 - [x] (2026-08-15 23:42Z) Dry-ran the compositor against all six real approved plates: every visible body is 99px high with zero spread and semantic QC passes.
-- [ ] Deploy the B1 control-plane/CPU compositor and DialectiCore API changes.
-- [ ] Regenerate only the panel master, verify the image and geometry, and leave it pending human review.
+- [x] (2026-08-15 23:52Z) Deployed B1 commit `adfebd57` to the controller and restarted the healthy control plane; restarted the DialectiCore development API on commit `02c6210`.
+- [ ] Complete and approve the six newly planned seated plates, then generate and visually verify panel master `15708e94-a57e-43b6-8316-49a1a5013a05` under the new compositor.
 
 ## Surprises & Discoveries
 
@@ -41,9 +41,12 @@ Claude as the reference and records the measured height spread.
 
 ## Outcomes & Retrospective
 
-Implementation is in progress. The original approved seated-character assets
-will remain unchanged; only the derived panel master and its dependents may be
-regenerated after deployment.
+The stature request contract, compositor normalization, rejecting QC, tests, and
+service deployment are complete. A concurrent operator workflow rejected and
+replaced the old panel and began regenerating all six seated plates at 23:48Z.
+Three are complete and pending review; two are running; one is submitted. The
+new panel master is correctly blocked in `planned` until those explicit human
+plate approvals exist. No review decision was bypassed.
 
 ## Context and Orientation
 
@@ -115,3 +118,7 @@ as the regression source and the user selected Claude as the stature reference.
 
 Plan update 2026-08-15 23:42Z: Recorded the implemented request contract, B1
 normalization/QC boundary, passing focused suites, and real-plate dry-run evidence.
+
+Plan update 2026-08-15 23:55Z: Recorded the live deployment and the independently
+started full plate regeneration that now blocks final panel-master verification
+on mandatory human review.
