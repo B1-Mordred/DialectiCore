@@ -90,8 +90,8 @@ B1 over the internal worker network. B1's lifecycle client is
 `/opt/b1-ai-hub-source/services/control-plane/app/executor.py`.
 
 The live episode is `9d145344-82c9-46cc-b4c1-661d95f0bf56`. It has an approved,
-Claude-height-normalized panel keyframe and seven ready rear-screen assets. Its 21
-current `video_primary` assets are failed and retryable.
+Claude-height-normalized panel keyframe, seven ready rear-screen assets, and 21
+completed current `video_primary` assets after this recovery.
 
 ## Plan of Work
 
