@@ -953,6 +953,15 @@ def default_render_presets() -> list[RenderPreset]:
             audio_bitrate="128k",
         ),
         RenderPreset(
+            id="preview-high-quality",
+            name="Preview High Quality",
+            width=1280,
+            height=720,
+            fps=24,
+            video_bitrate="8M",
+            audio_bitrate="192k",
+        ),
+        RenderPreset(
             id="audio-only",
             name="Audio Only",
             width=1280,

@@ -36,6 +36,19 @@ from app.infrastructure.database import (  # noqa: E402
 )
 from app.infrastructure.repository import EpisodeRepository  # noqa: E402
 from app.services.object_storage import create_object_store  # noqa: E402
+from production_v2_integrated_qualification import (  # noqa: E402
+    CHARACTER_CANVAS_SIZE,
+    DESK_OCCLUSION_OVERLAP,
+    DESK_TOP,
+    MATTE_GEOMETRY,
+    PARTICIPANTS,
+    SCREEN_HEIGHT,
+    SCREEN_WIDTH,
+    SCREEN_X,
+    SCREEN_Y,
+    STUDIO_URI,
+    _master_path,
+)
 
 SOURCE_EPISODE_ID = UUID("cc1ad449-9cad-4a40-a150-652db0b7dc7a")
 OUTPUT_ROOT = ROOT / "output/production-v2/full-production/render"
@@ -409,6 +422,49 @@ def main() -> int:
             episode.assets.append(broll_asset)
             existing_broll_by_source_id[str(source_broll.id)] = broll_asset
         clip["asset_id"] = str(broll_asset.id)
+    matte_uris: dict[str, str] = {}
+    matte_checksums: dict[str, str] = {}
+    for participant_id in PARTICIPANTS:
+        source = _master_path(participant_id)
+        stored_matte = object_store.put_bytes(
+            key=(
+                f"production-v3/editorial/{episode.id}/seated-masters/"
+                f"{participant_id}.png"
+            ),
+            payload=source.read_bytes(),
+            content_type="image/png",
+        )
+        matte_uris[participant_id] = stored_matte.uri
+        matte_checksums[participant_id] = stored_matte.checksum
+    timeline.setdefault("render_contract", {})["high_quality_studio"] = {
+        "policy": "high_quality_seated_performance.v1",
+        "studio_reference_uri": STUDIO_URI,
+        "matte_uris": matte_uris,
+        "matte_checksums": matte_checksums,
+        "participant_order": list(PARTICIPANTS),
+        "seat_centers_x": [440, 597, 754, 911, 1068, 1225],
+        "canvas_width": 1672,
+        "canvas_height": 941,
+        "camera_top": 190,
+        "screen": {
+            "x": SCREEN_X,
+            "y": SCREEN_Y,
+            "width": SCREEN_WIDTH,
+            "height": SCREEN_HEIGHT,
+        },
+        "desk_top": DESK_TOP,
+        "desk_overlap": DESK_OCCLUSION_OVERLAP,
+        "edge_desk_contact_extra": 18,
+        "wide_character_scale": 0.82,
+        "character_canvas_size": CHARACTER_CANVAS_SIZE,
+        "matte_geometry": MATTE_GEOMETRY,
+        "performance_role": "production_v2_speaking_character",
+        "camera_policy": "ui_direction_over_composited_performance.v1",
+        "intermediate_video_crf": 16,
+    }
+    for clip in timeline.get("tracks", {}).get("broll_presentation", []):
+        clip.setdefault("fit", "contain")
+        clip.setdefault("focal_y", 0.5)
     timeline["duration_ms"] = int(preview_probe["duration_ms"])
     timeline_payload = json.dumps(timeline, indent=2, sort_keys=True).encode()
     revision_prefix = f"revision-{revision}/" if revision > 1 else ""

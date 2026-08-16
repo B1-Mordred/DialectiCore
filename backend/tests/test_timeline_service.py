@@ -346,6 +346,36 @@ def test_parallel_track_transition_duration_is_normalized_and_bounded() -> None:
 
     assert normalized["broll_presentation"][0]["transition_duration_ms"] == 1_750
 
+    contained = service._normalize_timeline_tracks(
+        {
+            "broll_presentation": [
+                {
+                    "id": "presentation-contained",
+                    "start_ms": 1_000,
+                    "end_ms": 4_000,
+                    "fit": "contain",
+                    "focal_y": 0.25,
+                }
+            ]
+        }
+    )["broll_presentation"][0]
+    assert contained["fit"] == "contain"
+    assert contained["focal_y"] == 0.25
+
+    with pytest.raises(ValueError, match="unsupported B-roll fit"):
+        service._normalize_timeline_tracks(
+            {
+                "broll_presentation": [
+                    {
+                        "id": "presentation-stretched",
+                        "start_ms": 1_000,
+                        "end_ms": 4_000,
+                        "fit": "stretch",
+                    }
+                ]
+            }
+        )
+
     with pytest.raises(ValueError, match="transition duration must be 0-5000ms"):
         service._normalize_timeline_tracks(
             {
@@ -453,7 +483,25 @@ def test_panel_camera_relink_preserves_parallel_editorial_tracks() -> None:
             "shot_plan": {"studio_panel_scene_asset_id": "scene-wide"},
         },
     )
-    episode.assets.extend([old_primary, wide_primary])
+    performance = Asset(
+        episode_id=episode.id,
+        asset_type=AssetType.video,
+        language="en",
+        source_entity_type="transcript_turn",
+        source_entity_id=str(turn.id),
+        status="completed",
+        storage_uri="object://dialecticore/production-v2/speaking/host.mp4",
+        width=1024,
+        height=1024,
+        fps=12,
+        checksum="sha256:performance",
+        generation_metadata={
+            "visual_role": "production_v2_speaking_character",
+            "participant_id": "host",
+            "animation_input_policy": "normalized_seated_master",
+        },
+    )
+    episode.assets.extend([old_primary, wide_primary, performance])
     timeline = {
         "media": {"composition_policy": "seated_studio_panel.v1"},
         "segments": [
@@ -477,6 +525,15 @@ def test_panel_camera_relink_preserves_parallel_editorial_tracks() -> None:
             }
         ],
         "tracks": {
+            "character_performance": [
+                {
+                    "id": "segment-host",
+                    "asset_id": str(performance.id),
+                    "speaking_asset_id": str(performance.id),
+                    "start_ms": 0,
+                    "end_ms": 2_000,
+                }
+            ],
             "camera_direction": [
                 {
                     "id": "segment-host",
@@ -503,16 +560,20 @@ def test_panel_camera_relink_preserves_parallel_editorial_tracks() -> None:
     )
 
     segment = relinked["segments"][0]
-    assert segment["video_asset_id"] == str(wide_primary.id)
+    assert segment["video_asset_id"] == str(performance.id)
+    assert segment["camera_source_asset_id"] == str(wide_primary.id)
     assert segment["studio_panel_scene_asset_id"] == "scene-wide"
     assert segment["direction"]["view"] == "establishing_wide"
     assert segment["direction"]["action"] == "fly_in"
     assert segment["visual_layers"][0]["role"] == "video_primary"
-    assert segment["visual_layers"][0]["asset_id"] == str(wide_primary.id)
+    assert segment["visual_layers"][0]["asset_id"] == str(performance.id)
     assert segment["visual_layers"][1] == {
         "role": "wall_screen_broll",
         "asset_id": "broll-1",
     }
+    assert relinked["tracks"]["camera_direction"][0]["camera_source_asset_id"] == str(
+        wide_primary.id
+    )
     assert "camera_plate_asset_id" not in relinked["tracks"]["camera_direction"][0]
     assert relinked["tracks"]["camera_direction"][0]["linked_segment_id"] == (
         "segment-host"

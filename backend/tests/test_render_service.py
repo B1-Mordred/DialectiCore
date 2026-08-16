@@ -387,6 +387,105 @@ def test_branded_show_identity_crop_keeps_complete_title_in_safe_screen_band() -
     assert "crop=640:320:0:(ih-oh)*0.50" in broll
 
 
+def test_rear_screen_fit_policy_preserves_aspect_without_silent_cover_crop() -> None:
+    service = RenderService(Settings())
+    preset = next(item for item in default_render_presets() if item.id == "preview-low-bitrate")
+
+    contained = service._animated_overlay_stream_filter(
+        input_index=1,
+        output_label="contained",
+        width=640,
+        height=165,
+        preset=preset,
+        animation=None,
+        fit="contain",
+    )
+    covered = service._animated_overlay_stream_filter(
+        input_index=1,
+        output_label="covered",
+        width=640,
+        height=165,
+        preset=preset,
+        animation=None,
+        fit="cover",
+        crop_y_fraction=0.25,
+    )
+
+    assert "force_original_aspect_ratio=decrease" in contained
+    assert "pad=640:165:(ow-iw)/2:(oh-ih)/2" in contained
+    assert "crop=640:165" not in contained
+    assert "force_original_aspect_ratio=increase" in covered
+    assert "crop=640:165:0:(ih-oh)*0.25" in covered
+
+
+def test_high_quality_studio_camera_filters_are_distinct_and_ui_driven() -> None:
+    service = RenderService(Settings())
+    contract = {
+        "canvas_width": 1672,
+        "canvas_height": 941,
+        "camera_top": 190,
+        "seat_centers_x": [440, 597, 754, 911, 1068, 1225],
+        "participant_order": ["chatgpt", "claude", "deepseek", "gemini", "grok", "mistral"],
+    }
+
+    wide = service._high_quality_studio_camera_filter(
+        view="establishing_wide",
+        action="fly_in",
+        speaker_id="grok",
+        paired_participant_ids=[],
+        contract=contract,
+        duration_ms=4_000,
+        fps=24,
+    )
+    medium = service._high_quality_studio_camera_filter(
+        view="speaker_medium",
+        action="cut",
+        speaker_id="grok",
+        paired_participant_ids=[],
+        contract=contract,
+        duration_ms=4_000,
+        fps=24,
+    )
+    close = service._high_quality_studio_camera_filter(
+        view="speaker_close_up",
+        action="slow_push",
+        speaker_id="grok",
+        paired_participant_ids=[],
+        contract=contract,
+        duration_ms=4_000,
+        fps=24,
+    )
+    two_shot = service._high_quality_studio_camera_filter(
+        view="panel_two_shot",
+        action="cut",
+        speaker_id="grok",
+        paired_participant_ids=["mistral"],
+        contract=contract,
+        duration_ms=4_000,
+        fps=24,
+    )
+    pan = service._high_quality_studio_camera_filter(
+        view="speaker_medium",
+        action="pan_to_participant",
+        speaker_id="grok",
+        paired_participant_ids=[],
+        from_participant_id="claude",
+        target_participant_id="grok",
+        easing="ease_in_out",
+        contract=contract,
+        duration_ms=4_000,
+        fps=24,
+    )
+
+    assert "zoompan" in wide
+    assert "crop=800:450" in medium
+    assert "crop=560:315" in close
+    assert "crop=650:366" in two_shot
+    assert "crop=800:450:'597+(471)*(" in pan
+    assert "n/95" in pan
+    assert len({wide, medium, close, two_shot}) == 4
+
+
 def test_render_request_records_explicit_qualification_scope() -> None:
     request = RenderRequest(review_scope="qualification_slice")
 
@@ -2517,6 +2616,11 @@ def test_render_service_creates_preview_render_with_manifest_and_qc(tmp_path: Pa
         == 48_000
     )
     assert render_asset.generation_metadata["render_manifest"]["source_assets"]
+    editorial_direction = render_asset.generation_metadata["render_manifest"][
+        "editorial_direction"
+    ]
+    assert "camera_direction" in editorial_direction
+    assert "broll_presentation" in editorial_direction
     source_asset = render_asset.generation_metadata["render_manifest"]["source_assets"][0]
     assert {"source_entity_type", "source_entity_id", "status", "render_ready"} <= set(source_asset)
     composition = render_asset.generation_metadata["render_manifest"]["composition"]

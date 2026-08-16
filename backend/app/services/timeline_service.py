@@ -222,6 +222,26 @@ class TimelineService:
             relinked["media"] = relinked_media
         relinked_media["composition_policy"] = "seated_studio_panel.v1"
         assets = list(reversed(episode.assets))
+        asset_by_id = {str(asset.id): asset for asset in episode.assets}
+        tracks = relinked.get("tracks")
+        performance_asset_by_segment_id: dict[str, Asset] = {}
+        if isinstance(tracks, dict):
+            for clip in tracks.get("character_performance", []):
+                if not isinstance(clip, dict):
+                    continue
+                segment_id = str(clip.get("linked_segment_id") or clip.get("id") or "")
+                performance_id = str(
+                    clip.get("speaking_asset_id") or clip.get("asset_id") or ""
+                )
+                performance = asset_by_id.get(performance_id)
+                if (
+                    segment_id
+                    and performance is not None
+                    and performance.status != "replaced"
+                    and performance.generation_metadata.get("visual_role")
+                    == "production_v2_speaking_character"
+                ):
+                    performance_asset_by_segment_id[segment_id] = performance
         camera_asset_by_segment_id: dict[str, str] = {}
         direction_by_segment_id: dict[str, tuple[str, str]] = {}
         for segment in relinked.get("segments", []):
@@ -234,7 +254,7 @@ class TimelineService:
                 or segment.get("camera_view")
                 or "speaker_medium"
             )
-            primary = next(
+            camera_source = next(
                 (
                     asset
                     for asset in assets
@@ -249,15 +269,32 @@ class TimelineService:
                 ),
                 None,
             )
-            if primary is None:
+            if camera_source is None:
                 continue
+            segment_id = str(segment.get("id") or "")
+            performance = performance_asset_by_segment_id.get(segment_id)
+            if performance is None:
+                legacy_performance = asset_by_id.get(
+                    str(segment.get("studio_scene_asset_id") or "")
+                )
+                if (
+                    legacy_performance is not None
+                    and legacy_performance.status != "replaced"
+                    and legacy_performance.source_entity_id == turn_id
+                    and legacy_performance.generation_metadata.get("visual_role")
+                    == "production_v2_speaking_character"
+                ):
+                    performance = legacy_performance
             old_primary_id = str(segment.get("video_asset_id") or "")
+            camera_source_id = str(camera_source.id)
+            primary = performance or camera_source
             primary_id = str(primary.id)
-            shot_plan = self._shot_plan_for_asset(primary)
+            shot_plan = self._shot_plan_for_asset(camera_source)
             segment["video_asset_id"] = primary_id
-            segment["studio_panel_scene_asset_id"] = shot_plan.get(
-                "studio_panel_scene_asset_id",
-                segment.get("studio_panel_scene_asset_id"),
+            segment["camera_source_asset_id"] = camera_source_id
+            segment["studio_panel_scene_asset_id"] = (
+                shot_plan.get("studio_panel_scene_asset_id")
+                or segment.get("studio_panel_scene_asset_id")
             )
             segment["camera_view"] = desired_view
             segment["camera_action"] = str(
@@ -291,12 +328,12 @@ class TimelineService:
                 fingerprints = {}
                 segment["media_fingerprints"] = fingerprints
             fingerprints["video_primary"] = self._asset_fingerprint(primary)
-            camera_asset_by_segment_id[str(segment.get("id") or "")] = primary_id
+            fingerprints["camera_source"] = self._asset_fingerprint(camera_source)
+            camera_asset_by_segment_id[segment_id] = camera_source_id
             direction_by_segment_id[str(segment.get("id") or "")] = (
                 desired_view,
                 segment["camera_action"],
             )
-        tracks = relinked.get("tracks")
         if isinstance(tracks, dict):
             for clip in tracks.get("camera_direction", []):
                 if not isinstance(clip, dict):
@@ -313,9 +350,9 @@ class TimelineService:
                         linked_segment_id = clip_id[7:]
                 if linked_segment_id in camera_asset_by_segment_id:
                     clip["linked_segment_id"] = linked_segment_id
-                    # The segment's video_primary already is the exact native
-                    # camera source. Reapplying it as an alternate plate would
-                    # discard rear-screen graphics and B-roll layers.
+                    clip["camera_source_asset_id"] = camera_asset_by_segment_id[
+                        linked_segment_id
+                    ]
                     clip.pop("camera_plate_asset_id", None)
                 if linked_segment_id in direction_by_segment_id:
                     clip["view"], clip["action"] = direction_by_segment_id[
@@ -427,6 +464,12 @@ class TimelineService:
                         "roundtrip",
                     }:
                         raise ValueError(f"unsupported B-roll presentation mode: {mode}")
+                    fit = str(raw_clip.get("fit") or "contain")
+                    if fit not in {"contain", "cover"}:
+                        raise ValueError(f"unsupported B-roll fit: {fit}")
+                    focal_y = float(raw_clip.get("focal_y", 0.5))
+                    if not 0.0 <= focal_y <= 1.0:
+                        raise ValueError("B-roll focal_y must be between 0 and 1")
                 if track_name == "screen_graphics":
                     if raw_clip.get("kind") != "show_identity":
                         raise ValueError("unsupported screen graphic kind")
@@ -444,6 +487,14 @@ class TimelineService:
                         **(
                             {"transition_duration_ms": transition_duration_ms}
                             if transition_duration_ms is not None
+                            else {}
+                        ),
+                        **(
+                            {
+                                "fit": str(raw_clip.get("fit") or "contain"),
+                                "focal_y": float(raw_clip.get("focal_y", 0.5)),
+                            }
+                            if track_name == "broll_presentation"
                             else {}
                         ),
                     }
@@ -1484,6 +1535,17 @@ class TimelineService:
         seated_panel = (
             timeline.get("media", {}).get("composition_policy") == "seated_studio_panel.v1"
         )
+        render_contract = timeline.get("render_contract")
+        high_quality_studio = (
+            render_contract.get("high_quality_studio")
+            if isinstance(render_contract, dict)
+            else None
+        )
+        high_quality_studio_enabled = (
+            isinstance(high_quality_studio, dict)
+            and high_quality_studio.get("policy")
+            == "high_quality_seated_performance.v1"
+        )
         ordered_playable_turn_ids = [
             str(turn.id) for turn in transcript.turns if turn.status != "excluded"
         ]
@@ -1681,29 +1743,51 @@ class TimelineService:
             )
             shot_plan = self._shot_plan_for_asset(primary_asset)
             if seated_panel and segment.get("segment_type") != "topic_primer":
-                planned_scene_id = self._non_empty_string(
-                    shot_plan.get("studio_panel_scene_asset_id")
-                )
-                actual_scene_id = segment.get("studio_panel_scene_asset_id")
-                planned_scene = asset_by_id.get(planned_scene_id) if planned_scene_id else None
-                if (
-                    planned_scene_id is None
-                    or actual_scene_id != planned_scene_id
-                    or not self._is_completed_render_ready_asset(
-                        planned_scene, AssetType.studio_scene
+                if high_quality_studio_enabled:
+                    performance_ready = (
+                        primary_asset is not None
+                        and primary_asset.status == "completed"
+                        and primary_asset.generation_metadata.get("visual_role")
+                        == "production_v2_speaking_character"
                     )
-                ):
-                    missing_seated_panel_scene_count += 1
-                    issues.append(
-                        {
-                            "severity": "fail",
-                            "issue": "timeline_missing_seated_panel_scene",
-                            "segment_id": segment_id,
-                            "source_turn_id": turn_id,
-                            "expected_asset_id": planned_scene_id,
-                            "actual_asset_id": actual_scene_id,
-                        }
+                    if not performance_ready:
+                        missing_seated_panel_scene_count += 1
+                        issues.append(
+                            {
+                                "severity": "fail",
+                                "issue": "timeline_missing_high_quality_seated_performance",
+                                "segment_id": segment_id,
+                                "source_turn_id": turn_id,
+                                "actual_asset_id": primary_video_id,
+                            }
+                        )
+                else:
+                    planned_scene_id = self._non_empty_string(
+                        shot_plan.get("studio_panel_scene_asset_id")
                     )
+                    actual_scene_id = segment.get("studio_panel_scene_asset_id")
+                    planned_scene = (
+                        asset_by_id.get(planned_scene_id) if planned_scene_id else None
+                    )
+                    scene_ready = (
+                        planned_scene_id is not None
+                        and actual_scene_id == planned_scene_id
+                        and self._is_completed_render_ready_asset(
+                            planned_scene, AssetType.studio_scene
+                        )
+                    )
+                    if not scene_ready:
+                        missing_seated_panel_scene_count += 1
+                        issues.append(
+                            {
+                                "severity": "fail",
+                                "issue": "timeline_missing_seated_panel_scene",
+                                "segment_id": segment_id,
+                                "source_turn_id": turn_id,
+                                "expected_asset_id": planned_scene_id,
+                                "actual_asset_id": actual_scene_id,
+                            }
+                        )
                 direction = segment.get("direction")
                 if (
                     not isinstance(direction, dict)

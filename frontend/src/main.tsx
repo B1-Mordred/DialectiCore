@@ -839,6 +839,7 @@ type TimelineTrackClip = {
   target_participant_id?: string | null;
   angle_id?: string | null;
   camera_plate_asset_id?: string | null;
+  camera_source_asset_id?: string | null;
   easing?: string;
   kind?: string;
   thumbnail_candidate?: boolean;
@@ -849,6 +850,8 @@ type TimelineTrackClip = {
   transition_duration_ms?: number;
   state?: string;
   mode?: string;
+  fit?: "contain" | "cover";
+  focal_y?: number;
   [key: string]: unknown;
 };
 
@@ -4550,7 +4553,7 @@ function App() {
     mutationFn: (episodeId: string) =>
       postJson(`/api/v1/episodes/${episodeId}/renders`, {
         render_type: "preview",
-        preset_id: "preview-low-bitrate",
+        preset_id: "preview-high-quality",
         user_id: "web-ui",
       }),
     onSuccess: async () => {
@@ -25103,6 +25106,46 @@ function TimelineEditorPanel(props: {
                       <option value="fullscreen">Full screen</option>
                     </select>
                   </label>
+                  <label className="field">
+                    <span>Screen fit</span>
+                    <select
+                      aria-label="B-roll screen fit"
+                      onChange={(event) =>
+                        updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
+                          fit: event.target.value as "contain" | "cover",
+                        })
+                      }
+                      value={selectedClip.fit ?? "contain"}
+                    >
+                      <option value="contain">Fit whole clip (no crop)</option>
+                      <option value="cover">Fill screen (crop edges)</option>
+                    </select>
+                    <small>
+                      Fit whole clip preserves the complete frame. Fill screen crops only when
+                      you explicitly select it.
+                    </small>
+                  </label>
+                  {selectedClip.fit === "cover" ? (
+                    <label className="field">
+                      <span>
+                        Vertical crop focus ({Math.round(Number(selectedClip.focal_y ?? 0.5) * 100)}%)
+                      </span>
+                      <input
+                        aria-label="B-roll vertical crop focus"
+                        max={1}
+                        min={0}
+                        onChange={(event) =>
+                          updateTrackClip(selectedTrackClip.trackName, selectedClip.id, {
+                            focal_y: Number(event.target.value),
+                          })
+                        }
+                        step={0.05}
+                        type="range"
+                        value={Number(selectedClip.focal_y ?? 0.5)}
+                      />
+                      <small>Top at 0%, centre at 50%, bottom at 100%.</small>
+                    </label>
+                  ) : null}
                   <label className="field">
                     <span>Transition duration ms</span>
                     <input

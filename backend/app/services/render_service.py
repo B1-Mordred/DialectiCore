@@ -974,6 +974,9 @@ class RenderService:
                 "easing": camera.get("easing") or "ease_in_out",
             },
         }
+        camera_source_asset_id = str(camera.get("camera_source_asset_id") or "")
+        if camera_source_asset_id:
+            updated["camera_source_asset_id"] = camera_source_asset_id
         plate_asset_id = str(camera.get("camera_plate_asset_id") or "")
         if not plate_asset_id:
             return updated
@@ -1070,6 +1073,13 @@ class RenderService:
             "source_end_ms": content_source_start_ms + int(piece["duration_ms"]),
             "content_clip_id": content.get("id"),
             "presentation_clip_id": presentation.get("id"),
+            "fit": str((active_keyframe or {}).get("fit") or presentation.get("fit") or "contain"),
+            "focal_y": float(
+                (active_keyframe or {}).get(
+                    "focal_y",
+                    presentation.get("focal_y", 0.5),
+                )
+            ),
         }
         if state == "fullscreen":
             return {
@@ -1091,6 +1101,8 @@ class RenderService:
                     "content_clip_id": content.get("id"),
                     "presentation_clip_id": presentation.get("id"),
                     "source_start_ms": content_source_start_ms,
+                    "fit": layer["fit"],
+                    "focal_y": layer["focal_y"],
                 },
             }
         base_layers = [
@@ -1111,6 +1123,8 @@ class RenderService:
                 "content_clip_id": content.get("id"),
                 "presentation_clip_id": presentation.get("id"),
                 "source_start_ms": content_source_start_ms,
+                "fit": layer["fit"],
+                "focal_y": layer["focal_y"],
             },
         }
 
@@ -1118,6 +1132,12 @@ class RenderService:
         asset_by_id = {str(asset.id): asset for asset in episode.assets}
         composition_policy = str(timeline.get("media", {}).get("composition_policy") or "")
         if composition_policy == "seated_studio_panel.v1":
+            render_contract = timeline.get("render_contract")
+            high_quality_contract = (
+                render_contract.get("high_quality_studio")
+                if isinstance(render_contract, dict)
+                else None
+            )
             missing_roles: list[dict] = []
             for segment in timeline.get("segments", []):
                 if not isinstance(segment, dict) or segment.get("segment_type") == "topic_primer":
@@ -1135,6 +1155,90 @@ class RenderService:
                     missing_roles.append(
                         {"segment_id": segment.get("id"), "role": "audio_driven_seated_panel"}
                     )
+                elif isinstance(high_quality_contract, dict):
+                    if primary is not None and primary.status != "completed":
+                        missing_roles.append(
+                            {"segment_id": segment.get("id"), "role": "completed_performance"}
+                        )
+                    elif primary is not None and primary.source_entity_id != str(
+                        segment.get("source_turn_id") or ""
+                    ):
+                        missing_roles.append(
+                            {"segment_id": segment.get("id"), "role": "matching_turn_source"}
+                        )
+                    elif primary is not None and primary.generation_metadata.get(
+                        "visual_role"
+                    ) != "production_v2_speaking_character":
+                        missing_roles.append(
+                            {
+                                "segment_id": segment.get("id"),
+                                "role": "production_v2_speaking_performance",
+                            }
+                        )
+                    else:
+                        try:
+                            self._high_quality_studio_contract_for_segment(
+                                timeline=timeline,
+                                segment=segment,
+                                asset_by_id=asset_by_id,
+                            )
+                        except ValueError:
+                            missing_roles.append(
+                                {
+                                    "segment_id": segment.get("id"),
+                                    "role": "high_quality_studio_contract",
+                                }
+                            )
+                    camera_source = asset_by_id.get(
+                        str(segment.get("camera_source_asset_id") or "")
+                    )
+                    if camera_source is not None:
+                        desired_view = str(
+                            (direction.get("view") if isinstance(direction, dict) else None)
+                            or segment.get("camera_view")
+                            or "speaker_medium"
+                        )
+                        prompt_inputs = camera_source.generation_metadata.get("prompt_inputs")
+                        requested_view = (
+                            prompt_inputs.get("camera_view")
+                            if isinstance(prompt_inputs, dict)
+                            else None
+                        )
+                        actual_view = camera_source.generation_metadata.get(
+                            "provider_studio_panel_actual_camera_view"
+                        )
+                        expected_provider_view = (
+                            "speaker_close"
+                            if desired_view == "speaker_close_up"
+                            else desired_view
+                        )
+                        if not self._asset_path_exists(camera_source):
+                            missing_roles.append(
+                                {
+                                    "segment_id": segment.get("id"),
+                                    "role": "camera_source",
+                                }
+                            )
+                        elif requested_view != desired_view:
+                            missing_roles.append(
+                                {
+                                    "segment_id": segment.get("id"),
+                                    "role": "requested_camera_view",
+                                }
+                            )
+                        elif (
+                            camera_source.generation_metadata.get(
+                                "provider_studio_panel_camera_composition"
+                            )
+                            == "native_scene_camera"
+                            and actual_view != expected_provider_view
+                        ):
+                            missing_roles.append(
+                                {
+                                    "segment_id": segment.get("id"),
+                                    "role": "verified_camera_view",
+                                }
+                            )
                 elif primary is not None:
                     desired_view = str(
                         (direction.get("view") if isinstance(direction, dict) else None)
@@ -1176,7 +1280,10 @@ class RenderService:
                             {"segment_id": segment.get("id"), "role": "verified_camera_view"}
                         )
                 scene = asset_by_id.get(str(segment.get("studio_panel_scene_asset_id") or ""))
-                if not self._asset_path_exists(scene):
+                if (
+                    not isinstance(high_quality_contract, dict)
+                    and not self._asset_path_exists(scene)
+                ):
                     missing_roles.append(
                         {"segment_id": segment.get("id"), "role": "studio_panel_keyframe"}
                     )
@@ -1593,6 +1700,7 @@ class RenderService:
                 "secondary_visual_asset_id",
                 "reaction_visual_asset_id",
                 "studio_scene_asset_id",
+                "camera_source_asset_id",
                 "fallback_video_asset_id",
                 "subtitle_asset_id",
             ):
@@ -1610,18 +1718,32 @@ class RenderService:
             for clip in tracks.get(track_name, []):
                 if not isinstance(clip, dict):
                     continue
-                for key in ("asset_id", "camera_plate_asset_id"):
+                for key in ("asset_id", "camera_source_asset_id", "camera_plate_asset_id"):
                     if isinstance(clip.get(key), str):
                         source_asset_ids.add(clip[key])
-        configured_studio_references = sorted(
-            {
+        configured_studio_reference_set = {
                 str(segment.get("studio_reference_image_uri"))
                 for segment in timeline.get("segments", [])
                 if isinstance(segment, dict)
                 and isinstance(segment.get("studio_reference_image_uri"), str)
                 and segment.get("studio_reference_image_uri")
             }
+        render_contract = timeline.get("render_contract")
+        high_quality_studio = (
+            render_contract.get("high_quality_studio")
+            if isinstance(render_contract, dict)
+            else None
         )
+        if isinstance(high_quality_studio, dict):
+            studio_uri = high_quality_studio.get("studio_reference_uri")
+            if isinstance(studio_uri, str) and studio_uri:
+                configured_studio_reference_set.add(studio_uri)
+            matte_uris = high_quality_studio.get("matte_uris")
+            if isinstance(matte_uris, dict):
+                configured_studio_reference_set.update(
+                    str(uri) for uri in matte_uris.values() if isinstance(uri, str) and uri
+                )
+        configured_studio_references = sorted(configured_studio_reference_set)
         source_assets = []
         for asset_id in sorted(source_asset_ids):
             asset = asset_by_id.get(asset_id)
@@ -1669,6 +1791,57 @@ class RenderService:
             ),
             "composition": composition,
             "composition_policy": "studio_camera_cuts.v1",
+            "editorial_direction": {
+                "camera_direction": [
+                    {
+                        key: clip.get(key)
+                        for key in (
+                            "id",
+                            "linked_segment_id",
+                            "start_ms",
+                            "end_ms",
+                            "view",
+                            "action",
+                            "from_participant_id",
+                            "target_participant_id",
+                            "angle_id",
+                            "easing",
+                            "camera_source_asset_id",
+                        )
+                    }
+                    for clip in tracks.get("camera_direction", [])
+                    if isinstance(clip, dict)
+                ],
+                "broll_presentation": [
+                    {
+                        key: clip.get(key)
+                        for key in (
+                            "id",
+                            "content_clip_id",
+                            "start_ms",
+                            "end_ms",
+                            "mode",
+                            "fit",
+                            "focal_y",
+                            "transition_duration_ms",
+                        )
+                    }
+                    for clip in tracks.get("broll_presentation", [])
+                    if isinstance(clip, dict)
+                ],
+            },
+            "high_quality_studio": (
+                {
+                    "policy": high_quality_studio.get("policy"),
+                    "studio_reference_uri": high_quality_studio.get("studio_reference_uri"),
+                    "matte_uris": high_quality_studio.get("matte_uris"),
+                    "participant_order": high_quality_studio.get("participant_order"),
+                    "camera_policy": "ui_direction_over_composited_performance.v1",
+                    "broll_fit_policy": "per_clip_contain_or_explicit_cover.v1",
+                }
+                if isinstance(high_quality_studio, dict)
+                else None
+            ),
             "branded_thumbnail_source": thumbnail_source,
             "normalization": {
                 "video": {
@@ -2858,6 +3031,8 @@ class RenderService:
                             "embedded_in_primary": layer.get("embedded_in_primary") is True,
                             "source_start_ms": layer.get("source_start_ms"),
                             "source_end_ms": layer.get("source_end_ms"),
+                            "fit": layer.get("fit"),
+                            "focal_y": layer.get("focal_y"),
                         }
                     )
                     continue
@@ -2877,6 +3052,8 @@ class RenderService:
                         "embedded_in_primary": layer.get("embedded_in_primary") is True,
                         "source_start_ms": layer.get("source_start_ms"),
                         "source_end_ms": layer.get("source_end_ms"),
+                        "fit": layer.get("fit"),
+                        "focal_y": layer.get("focal_y"),
                     }
                 )
         if layers:
@@ -3457,12 +3634,33 @@ class RenderService:
             if render_piece_duration_seconds <= 0:
                 cursor_frame = end_frame
                 continue
-            visual_layers = self._resolved_visual_layers_for_segment(
-                segment,
-                asset_by_id,
-                preset,
+            studio_contract = self._high_quality_studio_contract_for_segment(
+                timeline=timeline,
+                segment=segment,
+                asset_by_id=asset_by_id,
             )
-            if len(visual_layers) > 1:
+            if studio_contract is not None:
+                path = self._high_quality_studio_piece_path(
+                    segment=segment,
+                    asset_by_id=asset_by_id,
+                    contract=studio_contract,
+                    directory=directory,
+                    filename=f"visual-segment-{index:04d}.mp4",
+                    duration_seconds=render_piece_duration_seconds,
+                    preset=preset,
+                    ffmpeg=ffmpeg,
+                    transition_policy=transition_policy,
+                )
+                visual_layers = []
+            else:
+                visual_layers = self._resolved_visual_layers_for_segment(
+                    segment,
+                    asset_by_id,
+                    preset,
+                )
+            if studio_contract is not None:
+                pass
+            elif len(visual_layers) > 1:
                 path = self._layered_visual_piece_path(
                     layers=visual_layers,
                     directory=directory,
@@ -3555,6 +3753,338 @@ class RenderService:
             preset=preset,
         )
 
+    def _high_quality_studio_contract_for_segment(
+        self,
+        *,
+        timeline: dict,
+        segment: dict,
+        asset_by_id: dict[str, Asset],
+    ) -> dict | None:
+        render_contract = timeline.get("render_contract")
+        contract = (
+            render_contract.get("high_quality_studio")
+            if isinstance(render_contract, dict)
+            else None
+        )
+        if not isinstance(contract, dict) or contract.get("policy") != (
+            "high_quality_seated_performance.v1"
+        ):
+            return None
+        direction = segment.get("direction")
+        if not isinstance(direction, dict) or direction.get("speaker_mouth_mode") != (
+            "audio_driven_seated_panel"
+        ):
+            return None
+        performance = asset_by_id.get(str(segment.get("video_asset_id") or ""))
+        if (
+            not self._asset_path_exists(performance)
+            or performance is None
+            or performance.generation_metadata.get("visual_role")
+            != "production_v2_speaking_character"
+        ):
+            return None
+        participant_order = contract.get("participant_order")
+        matte_uris = contract.get("matte_uris")
+        if not isinstance(participant_order, list) or not isinstance(matte_uris, dict):
+            raise ValueError("high-quality studio contract is missing participants or mattes")
+        speaker_id = str(segment.get("speaker_id") or "")
+        if speaker_id not in participant_order or speaker_id not in matte_uris:
+            raise ValueError("high-quality studio contract does not include the active speaker")
+        studio_uri = str(contract.get("studio_reference_uri") or "")
+        if self._optional_path_for_storage_uri(studio_uri) is None:
+            raise ValueError("high-quality studio reference is unavailable")
+        for participant_id in participant_order:
+            matte_path = self._optional_path_for_storage_uri(
+                str(matte_uris.get(participant_id) or "")
+            )
+            if matte_path is None:
+                raise ValueError(
+                    f"high-quality studio matte is unavailable for {participant_id}"
+                )
+        return contract
+
+    def _high_quality_studio_piece_path(
+        self,
+        *,
+        segment: dict,
+        asset_by_id: dict[str, Asset],
+        contract: dict,
+        directory: Path,
+        filename: str,
+        duration_seconds: float,
+        preset: RenderPreset,
+        ffmpeg: str,
+        transition_policy: dict | None,
+    ) -> Path:
+        output_path = directory / filename
+        performance = asset_by_id[str(segment.get("video_asset_id"))]
+        performance_path = self._optional_path_for_asset(performance)
+        studio_path = self._optional_path_for_storage_uri(
+            str(contract.get("studio_reference_uri") or "")
+        )
+        if performance_path is None or studio_path is None:
+            raise ValueError("high-quality studio inputs are unavailable")
+        participant_order = [str(value) for value in contract["participant_order"]]
+        matte_uris = {str(key): str(value) for key, value in contract["matte_uris"].items()}
+        speaker_id = str(segment.get("speaker_id") or "")
+        source_start_ms = int(segment.get("source_start_ms") or 0)
+
+        broll_reference = next(
+            (
+                layer
+                for layer in segment.get("visual_layers", [])
+                if isinstance(layer, dict) and layer.get("role") == "wall_screen_broll"
+            ),
+            None,
+        )
+        broll_path: Path | None = None
+        broll_is_image = False
+        if isinstance(broll_reference, dict):
+            broll_asset = asset_by_id.get(str(broll_reference.get("asset_id") or ""))
+            broll_path = (
+                self._optional_path_for_asset(broll_asset)
+                if broll_asset is not None
+                else self._optional_path_for_storage_uri(broll_reference.get("storage_uri"))
+            )
+            if broll_path is not None:
+                mime_type = (
+                    broll_asset.mime_type
+                    if broll_asset is not None
+                    else self._mime_type_for_path(broll_path)
+                ) or ""
+                broll_is_image = mime_type.startswith("image/")
+
+        command = [ffmpeg, "-hide_banner", "-y", "-loop", "1", "-i", str(studio_path)]
+        next_input = 1
+        broll_input: int | None = None
+        if broll_path is not None:
+            broll_input = next_input
+            next_input += 1
+            if broll_is_image:
+                command.extend(["-loop", "1", "-i", str(broll_path)])
+            else:
+                command.extend(
+                    [
+                        "-stream_loop",
+                        "-1",
+                        "-ss",
+                        f"{int(broll_reference.get('source_start_ms') or 0) / 1000:.3f}",
+                        "-i",
+                        str(broll_path),
+                    ]
+                )
+
+        participant_inputs: dict[str, tuple[int, int | None]] = {}
+        for participant_id in participant_order:
+            matte_path = self._optional_path_for_storage_uri(matte_uris[participant_id])
+            if matte_path is None:
+                raise ValueError(f"missing studio matte for {participant_id}")
+            if participant_id == speaker_id:
+                source_index = next_input
+                next_input += 1
+                command.extend(
+                    [
+                        "-stream_loop",
+                        "-1",
+                        "-ss",
+                        f"{source_start_ms / 1000:.3f}",
+                        "-i",
+                        str(performance_path),
+                    ]
+                )
+                matte_index = next_input
+                next_input += 1
+                command.extend(["-loop", "1", "-i", str(matte_path)])
+                participant_inputs[participant_id] = (source_index, matte_index)
+            else:
+                source_index = next_input
+                next_input += 1
+                command.extend(["-loop", "1", "-i", str(matte_path)])
+                participant_inputs[participant_id] = (source_index, None)
+
+        canvas_width = int(contract.get("canvas_width") or 1672)
+        canvas_height = int(contract.get("canvas_height") or 941)
+        screen = contract.get("screen") if isinstance(contract.get("screen"), dict) else {}
+        screen_x = int(screen.get("x") or 294)
+        screen_y = int(screen.get("y") or 190)
+        screen_width = int(screen.get("width") or 1065)
+        screen_height = int(screen.get("height") or 400)
+        filters = [f"[0:v]scale={canvas_width}:{canvas_height},format=rgba[studio]"]
+        previous = "studio"
+        if broll_input is not None and broll_reference is not None:
+            fit = str(broll_reference.get("fit") or "contain")
+            focal_y = float(broll_reference.get("focal_y", 0.5))
+            if fit == "cover":
+                filters.append(
+                    f"[{broll_input}:v]scale={screen_width}:{screen_height}:"
+                    "force_original_aspect_ratio=increase,"
+                    f"crop={screen_width}:{screen_height}:0:(ih-oh)*{focal_y:.2f},"
+                    f"fps={preset.fps},format=rgba[screen]"
+                )
+            else:
+                filters.extend(
+                    [
+                        f"[{broll_input}:v]split=2[screen_bg_source][screen_fg_source]",
+                        f"[screen_bg_source]scale={screen_width}:{screen_height}:"
+                        "force_original_aspect_ratio=increase,"
+                        f"crop={screen_width}:{screen_height},gblur=sigma=24,"
+                        f"eq=brightness=-0.12:saturation=0.75,fps={preset.fps},"
+                        "format=rgba[screen_bg]",
+                        f"[screen_fg_source]scale={screen_width}:{screen_height}:"
+                        "force_original_aspect_ratio=decrease,"
+                        f"fps={preset.fps},format=rgba[screen_fg]",
+                        "[screen_bg][screen_fg]overlay=(W-w)/2:(H-h)/2:"
+                        "format=auto[screen]",
+                    ]
+                )
+            filters.append(
+                f"[studio][screen]overlay={screen_x}:{screen_y}:format=auto[screenbase]"
+            )
+            previous = "screenbase"
+
+        for index, participant_id in enumerate(participant_order):
+            source_index, matte_index = participant_inputs[participant_id]
+            layout = self._high_quality_character_layout(
+                participant_id=participant_id,
+                view=str(segment.get("camera_view") or "speaker_medium"),
+                contract=contract,
+            )
+            size = layout["canvas_size"]
+            character_label = f"character{index}"
+            if matte_index is not None:
+                filters.extend(
+                    [
+                        f"[{source_index}:v]scale={size}:{size}:force_original_aspect_ratio=decrease,"
+                        f"pad={size}:{size}:(ow-iw)/2:(oh-ih)/2,format=rgb24[active_rgb{index}]",
+                        f"[{matte_index}:v]alphaextract,scale={size}:{size}:"
+                        "force_original_aspect_ratio=decrease,"
+                        f"pad={size}:{size}:(ow-iw)/2:(oh-ih)/2:color=black[active_alpha{index}]",
+                        f"[active_rgb{index}][active_alpha{index}]alphamerge[{character_label}]",
+                    ]
+                )
+            else:
+                filters.append(
+                    f"[{source_index}:v]scale={size}:{size}:force_original_aspect_ratio=decrease,"
+                    f"pad={size}:{size}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,"
+                    f"eq=brightness=-0.12:saturation=0.55,format=rgba[{character_label}]"
+                )
+            next_label = f"people{index}"
+            filters.append(
+                f"[{previous}][{character_label}]overlay={layout['left']}:{layout['top']}:"
+                f"format=auto[{next_label}]"
+            )
+            previous = next_label
+
+        desk_top = int(contract.get("desk_top") or 584)
+        filters.extend(
+            [
+                f"[0:v]scale={canvas_width}:{canvas_height},crop={canvas_width}:"
+                f"{canvas_height - desk_top}:0:{desk_top},format=rgba[desk]",
+                f"[{previous}][desk]overlay=0:{desk_top}:format=auto[studio_people]",
+            ]
+        )
+        direction = segment.get("direction") if isinstance(segment.get("direction"), dict) else {}
+        view = str(direction.get("view") or segment.get("camera_view") or "speaker_medium")
+        action = str(direction.get("action") or segment.get("camera_action") or "cut")
+        camera_source = asset_by_id.get(str(segment.get("camera_source_asset_id") or ""))
+        raw_shot_plan = (
+            camera_source.generation_metadata.get("shot_plan")
+            if camera_source is not None
+            else None
+        )
+        shot_plan = raw_shot_plan if isinstance(raw_shot_plan, dict) else {}
+        paired = [str(value) for value in shot_plan.get("paired_participant_ids", [])]
+        camera_filter = self._high_quality_studio_camera_filter(
+            view=view,
+            action=action,
+            speaker_id=speaker_id,
+            paired_participant_ids=paired,
+            from_participant_id=str(direction.get("from_participant_id") or ""),
+            target_participant_id=str(direction.get("target_participant_id") or ""),
+            easing=str(direction.get("easing") or "ease_in_out"),
+            contract=contract,
+            duration_ms=round(duration_seconds * 1000),
+            fps=preset.fps,
+        )
+        filters.append(f"[studio_people]{camera_filter}[camera]")
+        final_filter = self._append_transition_video_filter(
+            f"format={preset.pixel_format}",
+            transition_policy,
+            duration_seconds,
+        )
+        filters.append(f"[camera]{final_filter}[vout]")
+        command.extend(
+            [
+                "-filter_complex",
+                ";".join(filters),
+                "-map",
+                "[vout]",
+                "-t",
+                f"{max(duration_seconds, 0.001):.3f}",
+                "-an",
+                "-c:v",
+                preset.codec,
+                "-crf",
+                "16",
+                "-preset",
+                "medium",
+                "-pix_fmt",
+                preset.pixel_format,
+                str(output_path),
+            ]
+        )
+        try:
+            subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=self._ffmpeg_timeout_seconds(duration_seconds, minimum=60),
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            detail = (
+                exc.stderr[-1000:].strip()
+                if isinstance(exc, subprocess.CalledProcessError) and exc.stderr
+                else ""
+            )
+            raise RuntimeError(
+                "high-quality studio composition failed" + (f": {detail}" if detail else "")
+            ) from exc
+        return output_path
+
+    @staticmethod
+    def _high_quality_character_layout(
+        *,
+        participant_id: str,
+        view: str,
+        contract: dict,
+    ) -> dict[str, int]:
+        participant_order = [str(value) for value in contract.get("participant_order", [])]
+        seat_centers = [int(value) for value in contract.get("seat_centers_x", [])]
+        sizes = contract.get("character_canvas_size", {})
+        geometry = contract.get("matte_geometry", {}).get(participant_id, {})
+        original_size = int(sizes.get(participant_id) or 330)
+        size = (
+            round(original_size * float(contract.get("wide_character_scale") or 0.82))
+            if view == "establishing_wide"
+            else original_size
+        )
+        matte_canvas = int(geometry.get("canvas") or 1280)
+        alpha_bottom = int(geometry.get("alpha_bottom") or 1119)
+        scaled_alpha_height = round(alpha_bottom * size / matte_canvas)
+        target_alpha_bottom = int(contract.get("desk_top") or 584) + int(
+            contract.get("desk_overlap") or 12
+        )
+        if participant_id in {participant_order[0], participant_order[-1]}:
+            target_alpha_bottom += int(contract.get("edge_desk_contact_extra") or 0)
+        center_x = seat_centers[participant_order.index(participant_id)]
+        return {
+            "canvas_size": size,
+            "left": center_x - size // 2,
+            "top": target_alpha_bottom - scaled_alpha_height,
+            "target_alpha_bottom": target_alpha_bottom,
+        }
+
     def _resolved_visual_layers_for_segment(
         self,
         segment: dict,
@@ -3575,9 +4105,11 @@ class RenderService:
             )
             if path is None or not self._visual_reference_supported(asset, reference, path):
                 continue
+            role = reference.get("role") or reference.get("visual_role")
+            focal_y = reference.get("focal_y")
             layers.append(
                 {
-                    "role": reference.get("role") or reference.get("visual_role"),
+                    "role": role,
                     "purpose": reference.get("purpose"),
                     "asset": asset,
                     "path": path,
@@ -3586,6 +4118,11 @@ class RenderService:
                     "layout_slot": reference.get("layout_slot"),
                     "source_start_ms": self._optional_int(reference.get("source_start_ms")) or 0,
                     "source_end_ms": self._optional_int(reference.get("source_end_ms")),
+                    "fit": str(
+                        reference.get("fit")
+                        or ("contain" if role == "wall_screen_broll" else "cover")
+                    ),
+                    "focal_y": float(focal_y if focal_y is not None else 0.5),
                 }
             )
         if not layers:
@@ -3815,8 +4352,11 @@ class RenderService:
                     animation=layer.get("animation"),
                     layout_slot=layer.get("layout_slot"),
                     crop_y_fraction=(
-                        0.33 if layer.get("purpose") == "branded_show_identity" else 0.5
+                        0.33
+                        if layer.get("purpose") == "branded_show_identity"
+                        else float(layer.get("focal_y", 0.5))
                     ),
+                    fit=str(layer.get("fit") or "cover"),
                 )
             )
             overlay_x, overlay_y = self._animated_overlay_position(
@@ -3886,11 +4426,18 @@ class RenderService:
         animation: object,
         layout_slot: object = None,
         crop_y_fraction: float = 0.5,
+        fit: str = "cover",
     ) -> str:
-        filters = [
-            f"[{input_index}:v]scale={width}:{height}:force_original_aspect_ratio=increase",
-            f"crop={width}:{height}:0:(ih-oh)*{crop_y_fraction:.2f}",
-        ]
+        if fit == "contain":
+            filters = [
+                f"[{input_index}:v]scale={width}:{height}:force_original_aspect_ratio=decrease",
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black",
+            ]
+        else:
+            filters = [
+                f"[{input_index}:v]scale={width}:{height}:force_original_aspect_ratio=increase",
+                f"crop={width}:{height}:0:(ih-oh)*{crop_y_fraction:.2f}",
+            ]
         filters.extend(
             [
                 f"fps={preset.fps}",
@@ -3915,6 +4462,117 @@ class RenderService:
         # label as another comma-delimited filter produces an empty filter and
         # used to trigger the static-base fallback in the renderer.
         return ",".join(filters) + f"[{output_label}]"
+
+    def _high_quality_studio_camera_filter(
+        self,
+        *,
+        view: str,
+        action: str,
+        speaker_id: str,
+        paired_participant_ids: list[str],
+        contract: dict,
+        duration_ms: int,
+        fps: int,
+        from_participant_id: str = "",
+        target_participant_id: str = "",
+        easing: str = "ease_in_out",
+    ) -> str:
+        """Turn saved UI direction into a deterministic crop of the HQ studio canvas."""
+        canvas_width = int(contract.get("canvas_width") or 1672)
+        canvas_height = int(contract.get("canvas_height") or 941)
+        camera_top = int(contract.get("camera_top") or 190)
+        participant_order = [
+            str(value) for value in contract.get("participant_order", [])
+        ]
+        seat_centers = [int(value) for value in contract.get("seat_centers_x", [])]
+        if speaker_id not in participant_order or len(seat_centers) != len(participant_order):
+            raise ValueError("high-quality studio camera contract does not locate the speaker")
+        speaker_x = seat_centers[participant_order.index(speaker_id)]
+        canonical_view = {
+            "speaker_centered": "speaker_medium",
+            "speaker_close": "speaker_close_up",
+        }.get(view, view)
+        if canonical_view == "establishing_wide":
+            frame_count = max(1, round(max(1, duration_ms) * fps / 1000))
+            progress = f"on/{max(1, frame_count - 1)}"
+            if action == "fly_in":
+                zoom = f"1.0+0.08*{progress}"
+            elif action == "slow_pull":
+                zoom = f"1.08-0.08*{progress}"
+            else:
+                zoom = "1.0"
+            return (
+                f"scale={canvas_width}:{canvas_height},"
+                f"zoompan=z='{zoom}':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':"
+                f"d=1:s=1280x720:fps={fps},setsar=1,setpts=N/({fps}*TB)"
+            )
+        if canonical_view == "speaker_close_up":
+            crop_width, crop_height = 560, 315
+        elif canonical_view == "panel_two_shot":
+            crop_width, crop_height = 650, 366
+        else:
+            crop_width, crop_height = 800, 450
+        focus_x = speaker_x
+        if canonical_view == "panel_two_shot":
+            pair = next(
+                (value for value in paired_participant_ids if value in participant_order),
+                None,
+            )
+            if pair is None:
+                speaker_index = participant_order.index(speaker_id)
+                neighbor_index = min(
+                    len(participant_order) - 1,
+                    speaker_index + 1,
+                )
+                if neighbor_index == speaker_index:
+                    neighbor_index = max(0, speaker_index - 1)
+                pair = participant_order[neighbor_index]
+            focus_x = round((speaker_x + seat_centers[participant_order.index(pair)]) / 2)
+        extension = crop_width // 2
+        crop_x: str | int = focus_x
+        if action in {"pan_left", "pan_right", "pan_to_participant"}:
+            frame_count = max(1, round(max(1, duration_ms) * fps / 1000))
+            denominator = max(1, frame_count - 1)
+            linear_progress = f"n/{denominator}"
+            progress = {
+                "ease_in": f"pow({linear_progress},2)",
+                "ease_out": f"1-pow(1-{linear_progress},2)",
+                "ease_in_out": (
+                    f"if(lt({linear_progress},0.5),2*pow({linear_progress},2),"
+                    f"1-pow(-2*{linear_progress}+2,2)/2)"
+                ),
+            }.get(easing, linear_progress)
+            start_x = focus_x
+            end_x = focus_x
+            if action == "pan_left":
+                start_x, end_x = focus_x + 140, focus_x - 140
+            elif action == "pan_right":
+                start_x, end_x = focus_x - 140, focus_x + 140
+            else:
+                if from_participant_id in participant_order:
+                    start_x = seat_centers[participant_order.index(from_participant_id)]
+                if target_participant_id not in participant_order:
+                    raise ValueError("pan_to_participant camera action requires a valid target")
+                end_x = seat_centers[participant_order.index(target_participant_id)]
+            crop_x = f"'{start_x}+({end_x - start_x})*({progress})'"
+        filter_value = (
+            f"pad={canvas_width + extension * 2}:{canvas_height}:{extension}:0:color=0x070b23,"
+            f"crop={crop_width}:{crop_height}:{crop_x}:{camera_top},"
+            "scale=1280:720:flags=lanczos,setsar=1"
+        )
+        if action in {"slow_push", "slow_pull", "fly_in"}:
+            frame_count = max(1, round(max(1, duration_ms) * fps / 1000))
+            progress = f"on/{max(1, frame_count - 1)}"
+            zoom = (
+                f"1.0+0.06*{progress}"
+                if action in {"slow_push", "fly_in"}
+                else f"1.06-0.06*{progress}"
+            )
+            filter_value += (
+                f",zoompan=z='{zoom}':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':"
+                f"d=1:s=1280x720:fps={fps}"
+            )
+        return f"{filter_value},setpts=N/({fps}*TB)"
 
     def _overlay_mask_filters(self, layout_slot: object, width: int, height: int) -> list[str]:
         if not isinstance(layout_slot, dict):
