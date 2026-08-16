@@ -25,7 +25,7 @@ qualified speaking clip; only then may the other 20 failed clips be retried.
 - [x] (2026-08-16 00:37Z) Retried and qualified exactly one current speaking asset end to end as B1 job `job_7851d2d303d54fae83c25047d7df535f`.
 - [x] (2026-08-16 01:09Z) Retried the remaining 20 current speaking assets only after the single-clip gate passed; all 20 completed serially with zero failures.
 - [x] (2026-08-16 01:15Z) Audited all 21 current clips, proved idle recovery, removed the temporary admission override, and restored the normal B1 control-plane policy.
-- [ ] Commit and push the final evidence updates and verify CI plus local/remote commit equality.
+- [x] (2026-08-16 01:39Z) Committed and pushed both evidence updates, observed both CI workflows complete successfully, and verified local/remote commit equality.
 
 ## Surprises & Discoveries
 
@@ -177,4 +177,9 @@ and the admitted serial batch.
 
 Plan update note (2026-08-16 01:15Z): recorded 20/20 batch completion, the 21/21
 media and metadata audit, stable idle recovery, and removal of the temporary
-admission override. Only final source publication and CI verification remain.
+admission override.
+
+Plan update note (2026-08-16 01:39Z): DialectiCore CI run `31919203276` and B1
+CI run `31919202106` completed successfully. DialectiCore commit `2663d45` and B1
+commit `0f48da2` matched their respective remote branch heads before this final
+plan-only closure update.
