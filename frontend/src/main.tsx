@@ -84,6 +84,7 @@ import { productionReportOperatorActionSummary } from "./productionReportOperato
 import { activeManagedMediaJobCount } from "./productionActivity";
 import { canRenderFinal, canRenderPreview } from "./renderGates";
 import {
+  canonicalCameraView,
   positiveDurationMs,
   setSourceBoundaryPreservingDuration,
   trimTimelineClip,
@@ -11874,7 +11875,8 @@ function currentTalkshowRenderAsset(
     (asset) =>
       asset.asset_type === "render" &&
       isCurrentTalkshowRenderAsset(episode, asset) &&
-      asset.generation_metadata?.render_type === renderType,
+      asset.generation_metadata?.render_type === renderType &&
+      asset.generation_metadata?.review_scope === "full_timeline",
   );
   return renders.length > 0 ? renders[renders.length - 1] : null;
 }
@@ -13768,7 +13770,8 @@ function renderPreviewBlockerMessage(episode: Episode | null): string | null {
   const timeline = latestTimelinePayload(episode);
   if (
     timeline?.media?.composition_policy === "studio_camera_cuts.v1" ||
-    timeline?.media?.composition_policy === "studio_camera_cuts.v2"
+    timeline?.media?.composition_policy === "studio_camera_cuts.v2" ||
+    timeline?.media?.composition_policy === "seated_studio_panel.v1"
   ) {
     const integrity = [...episode.quality_results]
       .reverse()
@@ -13776,7 +13779,11 @@ function renderPreviewBlockerMessage(episode: Episode | null): string | null {
         (result) =>
           result.check_type === "timeline_integrity" && result.target_id === timelineAsset.id,
       );
-    if (integrity?.status !== "pass" || integrity?.severity === "fail") {
+    if (
+      !integrity ||
+      integrity.status === "fail" ||
+      integrity.severity === "fail"
+    ) {
       const failedIssue = integrity?.details.issues?.find(
         (issue) => issue.severity === "fail" && issue.issue,
       );
@@ -13991,6 +13998,7 @@ function latestRenderAsset(
       asset.status === "completed" &&
       !renderIntegrityFailed(episode, asset) &&
       isCurrentTalkshowRenderAsset(episode, asset) &&
+      asset.generation_metadata?.review_scope === "full_timeline" &&
       (renderType === undefined ||
         asset.generation_metadata?.render_type === renderType),
   );
@@ -23739,7 +23747,9 @@ function TimelineEditorPanel(props: {
     segment: TimelineSegment,
     patch: { view?: string; action?: string },
   ) => {
-    const view = patch.view ?? segment.direction?.view ?? segment.camera_view ?? "speaker_medium";
+    const view = canonicalCameraView(
+      patch.view ?? segment.direction?.view ?? segment.camera_view,
+    );
     const action =
       patch.action ?? segment.direction?.action ?? segment.camera_action ?? "cut";
     updateSegment(segment.id, {
@@ -23800,7 +23810,7 @@ function TimelineEditorPanel(props: {
               ) {
                 return segment;
               }
-              const view = String(patch.view ?? sourceClip.view ?? "speaker_medium");
+              const view = canonicalCameraView(patch.view ?? sourceClip.view);
               const action = String(patch.action ?? sourceClip.action ?? "cut");
               return {
                 ...segment,
@@ -24951,7 +24961,7 @@ function TimelineEditorPanel(props: {
                           view: event.target.value,
                         })
                       }
-                      value={String(selectedClip.view ?? "speaker_medium")}
+                      value={canonicalCameraView(selectedClip.view)}
                     >
                       <option value="establishing_wide">Establishing wide</option>
                       <option value="speaker_medium">Speaker medium</option>
@@ -25189,11 +25199,9 @@ function TimelineEditorPanel(props: {
                   <label className="field">
                     <span>Camera View</span>
                     <select
-                      value={
-                        selectedSegment.direction?.view ??
-                        selectedSegment.camera_view ??
-                        "speaker_medium"
-                      }
+                      value={canonicalCameraView(
+                        selectedSegment.direction?.view ?? selectedSegment.camera_view,
+                      )}
                       onChange={(event) =>
                         updateDirection(selectedSegment, {
                           view: event.target.value,
@@ -25204,7 +25212,11 @@ function TimelineEditorPanel(props: {
                       <option value="speaker_medium">Speaker medium</option>
                       <option value="speaker_close_up">Speaker close-up</option>
                       <option
-                        disabled={!selectedSegment.studio_group_cutaway_asset_id}
+                        disabled={
+                          props.episode?.definition.media?.directing?.studio_layout !==
+                            "seated_panel" &&
+                          !selectedSegment.studio_group_cutaway_asset_id
+                        }
                         value="panel_two_shot"
                       >
                         Panel two-shot

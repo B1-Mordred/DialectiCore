@@ -30,6 +30,15 @@ const directedTimelineV2: RenderGateAsset = {
   },
 };
 
+const seatedPanelTimeline: RenderGateAsset = {
+  ...timeline,
+  generation_metadata: {
+    timeline_json: {
+      media: { composition_policy: "seated_studio_panel.v1" },
+    },
+  },
+};
+
 function episode(
   overrides: Partial<RenderGateEpisode> = {},
 ): RenderGateEpisode {
@@ -49,6 +58,7 @@ function render(
     timelineId?: string;
     approvalStatus?: string;
     status?: string;
+    reviewScope?: "full_timeline" | "qualification_slice";
   } = {},
 ): RenderGateAsset {
   return {
@@ -59,6 +69,7 @@ function render(
     source_entity_id: options.timelineId ?? timeline.id,
     generation_metadata: {
       render_type: renderType,
+      review_scope: options.reviewScope ?? "full_timeline",
       preset_id:
         options.presetId ??
         (renderType === "preview" ? "preview-low-bitrate" : "youtube-1080p"),
@@ -100,6 +111,16 @@ describe("render gates", () => {
     ).toBe(false);
   });
 
+  it("does not let a qualification slice block or satisfy the full preview gate", () => {
+    const qualification = render("preview-qualification", "preview", {
+      reviewScope: "qualification_slice",
+      approvalStatus: "approved",
+    });
+
+    expect(canRenderPreview(episode({ assets: [timeline, qualification] }))).toBe(true);
+    expect(canRenderFinal(episode({ assets: [timeline, qualification] }))).toBe(false);
+  });
+
   it("requires a passing integrity result for a studio-directed timeline", () => {
     expect(canRenderPreview(episode({ assets: [directedTimeline] }))).toBe(false);
     expect(
@@ -131,6 +152,43 @@ describe("render gates", () => {
               target_id: directedTimelineV2.id,
               status: "pass",
               severity: "pass",
+            },
+          ],
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("requires the integrity gate for seated studio panel timelines", () => {
+    expect(canRenderPreview(episode({ assets: [seatedPanelTimeline] }))).toBe(false);
+    expect(
+      canRenderPreview(
+        episode({
+          assets: [seatedPanelTimeline],
+          quality_results: [
+            {
+              check_type: "timeline_integrity",
+              target_id: seatedPanelTimeline.id,
+              status: "pass",
+              severity: "pass",
+            },
+          ],
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("allows a non-blocking timeline integrity warning", () => {
+    expect(
+      canRenderPreview(
+        episode({
+          assets: [seatedPanelTimeline],
+          quality_results: [
+            {
+              check_type: "timeline_integrity",
+              target_id: seatedPanelTimeline.id,
+              status: "warning",
+              severity: "warning",
             },
           ],
         }),

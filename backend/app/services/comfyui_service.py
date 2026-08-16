@@ -471,6 +471,8 @@ class ComfyUiService:
         request: VisualAssetPlanRequest,
         visual_profiles: list[VisualProfile],
         workflows: list[ComfyUiWorkflow],
+        *,
+        timeline_override: dict | None = None,
     ) -> Episode:
         transcript = self._target_transcript(episode, request)
         playable_turns = [turn for turn in transcript.turns if turn.status != "excluded"]
@@ -490,6 +492,7 @@ class ComfyUiService:
                 visual_by_id=visual_by_id,
                 workflow_by_id=workflow_by_id,
                 participant_by_id=participant_by_id,
+                timeline_override=timeline_override,
             )
 
         if request.regenerate:
@@ -945,6 +948,7 @@ class ComfyUiService:
         visual_by_id: dict[str, VisualProfile],
         workflow_by_id: dict[str, ComfyUiWorkflow],
         participant_by_id: dict[str, object],
+        timeline_override: dict | None = None,
     ) -> Episode:
         """Plan a coherent episode-level set before scheduling seat-bound speech clips."""
         directing = episode.definition.media.directing
@@ -1214,6 +1218,20 @@ class ComfyUiService:
                 seating=seating,
                 turn_type=turn.turn_type.value if turn.turn_type is not None else None,
             )
+            editorial_direction = self._timeline_direction_for_turn(
+                timeline_override,
+                str(turn.id),
+            )
+            if editorial_direction is not None:
+                camera_view = self._canonical_seated_panel_camera_view(
+                    editorial_direction.get("view") or camera_view
+                )
+                camera_action = str(editorial_direction.get("action") or camera_action)
+                paired_ids = self._paired_participants_for_camera_view(
+                    camera_view=camera_view,
+                    speaker_participant_id=turn.speaker_participant_id,
+                    seating=seating,
+                )
             # B1 uses this high-resolution establishing-wide master as the
             # private scene reference for every native per-turn camera shot.
             scene_asset = coverage_by_key.get(master_coverage_key)
@@ -1337,6 +1355,61 @@ class ComfyUiService:
         episode.updated_at = datetime.now(UTC)
         return episode
 
+    @staticmethod
+    def _timeline_direction_for_turn(
+        timeline: dict | None,
+        turn_id: str,
+    ) -> dict | None:
+        if not isinstance(timeline, dict):
+            return None
+        for segment in timeline.get("segments", []):
+            if not isinstance(segment, dict) or str(segment.get("source_turn_id") or "") != turn_id:
+                continue
+            direction = segment.get("direction")
+            return {
+                "view": (
+                    direction.get("view")
+                    if isinstance(direction, dict)
+                    else segment.get("camera_view")
+                )
+                or segment.get("camera_view"),
+                "action": (
+                    direction.get("action")
+                    if isinstance(direction, dict)
+                    else segment.get("camera_action")
+                )
+                or segment.get("camera_action"),
+            }
+        return None
+
+    @staticmethod
+    def _canonical_seated_panel_camera_view(value: object) -> str:
+        view = str(value or "speaker_medium")
+        return {
+            "speaker_centered": "speaker_medium",
+            "speaker_close": "speaker_close_up",
+        }.get(view, view)
+
+    @staticmethod
+    def _paired_participants_for_camera_view(
+        *,
+        camera_view: str,
+        speaker_participant_id: str,
+        seating: dict[str, int],
+    ) -> list[str]:
+        if camera_view != "panel_two_shot" or len(seating) < 2:
+            return []
+        ordered_ids = [
+            participant_id
+            for participant_id, _seat in sorted(seating.items(), key=lambda item: item[1])
+        ]
+        try:
+            speaker_index = ordered_ids.index(speaker_participant_id)
+        except ValueError:
+            speaker_index = 0
+        partner_index = speaker_index - 1 if speaker_index else 1
+        return [ordered_ids[partner_index]]
+
     def _resolved_seating_plan(
         self,
         *,
@@ -1451,7 +1524,7 @@ class ComfyUiService:
         return next(
             (
                 asset
-                for asset in episode.assets
+                for asset in reversed(episode.assets)
                 if asset.language == transcript.language
                 and asset.asset_type == AssetType.studio_scene
                 and asset.status != "replaced"
@@ -1493,12 +1566,18 @@ class ComfyUiService:
                     "show_scene_reference_image_uri"
                 )
                 == studio_reference_uri
-                and asset.generation_metadata.get("prompt_inputs", {}).get(
-                    "portrait_reference_image_uri"
+                and str(
+                    asset.generation_metadata.get("prompt_inputs", {}).get(
+                        "portrait_reference_image_uri"
+                    )
+                    or ""
                 )
                 == portrait_reference_uri
-                and asset.generation_metadata.get("prompt_inputs", {}).get(
-                    "full_body_reference_image_uri"
+                and str(
+                    asset.generation_metadata.get("prompt_inputs", {}).get(
+                        "full_body_reference_image_uri"
+                    )
+                    or ""
                 )
                 == full_body_reference_uri
                 and asset.generation_metadata.get("comfyui_workflow_id") == workflow_id
@@ -7471,7 +7550,7 @@ class ComfyUiService:
         return next(
             (
                 asset
-                for asset in episode.assets
+                for asset in reversed(episode.assets)
                 if asset.language == transcript.language
                 and asset.source_entity_type == "transcript_turn"
                 and asset.source_entity_id == turn_id

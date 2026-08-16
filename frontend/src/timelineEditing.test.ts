@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  canonicalCameraView,
   positiveDurationMs,
   setSourceBoundaryPreservingDuration,
   trimTimelineClip,
@@ -14,6 +15,12 @@ describe("timeline editing", () => {
     source_in_ms: 2_000,
     source_out_ms: 7_000,
   };
+
+  it("shows legacy camera values as their supported native panel view", () => {
+    expect(canonicalCameraView("speaker_centered")).toBe("speaker_medium");
+    expect(canonicalCameraView("speaker_close")).toBe("speaker_close_up");
+    expect(canonicalCameraView("establishing_wide")).toBe("establishing_wide");
+  });
 
   it("trims a B-roll start and advances the source clock by the same amount", () => {
     expect(

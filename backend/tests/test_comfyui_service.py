@@ -1259,6 +1259,58 @@ async def test_seated_panel_plan_binds_each_turn_to_a_set_keyframe_and_seat() ->
         for asset in keyframes
     )
 
+    first_turn = next(turn for turn in produced.transcripts[-1].turns if turn.status != "excluded")
+    original_primary_by_turn = {
+        asset.source_entity_id: asset
+        for asset in primary_assets
+        if asset.status != "replaced"
+    }
+    editorial_timeline = {
+        "segments": [
+            {
+                "id": f"segment-{turn.id}",
+                "source_turn_id": str(turn.id),
+                "direction": {
+                    "view": (
+                        "speaker_close_up"
+                        if turn.id == first_turn.id
+                        else original_primary_by_turn[str(turn.id)].generation_metadata[
+                            "prompt_inputs"
+                        ]["camera_view"]
+                    ),
+                    "action": "slow_push" if turn.id == first_turn.id else "cut",
+                },
+            }
+            for turn in produced.transcripts[-1].turns
+            if turn.status != "excluded"
+        ]
+    }
+    replanned_for_edit = ComfyUiService().plan_visual_assets(
+        planned,
+        VisualAssetPlanRequest(user_id="timeline-editor"),
+        visual_profiles=default_visual_profiles(),
+        workflows=default_comfyui_workflows(),
+        timeline_override=editorial_timeline,
+    )
+    edited_primary = next(
+        asset
+        for asset in reversed(replanned_for_edit.assets)
+        if asset.status != "replaced"
+        and asset.source_entity_id == str(first_turn.id)
+        and asset.generation_metadata.get("visual_role") == "video_primary"
+    )
+    assert original_primary_by_turn[str(first_turn.id)].status == "replaced"
+    assert edited_primary.id != original_primary_by_turn[str(first_turn.id)].id
+    assert edited_primary.generation_metadata["prompt_inputs"]["camera_view"] == (
+        "speaker_close_up"
+    )
+    assert edited_primary.generation_metadata["shot_plan"]["camera_action"] == "slow_push"
+    assert all(
+        original_primary_by_turn[str(turn.id)].status != "replaced"
+        for turn in produced.transcripts[-1].turns
+        if turn.status != "excluded" and turn.id != first_turn.id
+    )
+
     stale_plate = seated_characters[0]
     stale_keyframe = keyframes[0]
     stale_plate.generation_metadata["comfyui_workflow_id"] = (

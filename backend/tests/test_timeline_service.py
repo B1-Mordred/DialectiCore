@@ -403,6 +403,126 @@ def test_virtual_camera_actions_and_broll_modes_are_validated() -> None:
         )
 
 
+def test_panel_camera_relink_preserves_parallel_editorial_tracks() -> None:
+    episode = EpisodeRepository().create(
+        EpisodeCreateRequest(
+            definition=definition(),
+            participants=default_participants(),
+            model_endpoints=default_model_endpoints(),
+        )
+    )
+    transcript = TranscriptVersion(
+        episode_id=episode.id,
+        type="broadcast",
+        language="en",
+        status="approved",
+    )
+    turn = TranscriptTurn(
+        source_discussion_turn_ids=[],
+        speaker_participant_id="host",
+        turn_type=TurnType.post_primer_bridge,
+        text="Welcome to the studio.",
+        status="accepted",
+    )
+    transcript.turns.append(turn)
+    episode.transcripts.append(transcript)
+    old_primary = Asset(
+        episode_id=episode.id,
+        asset_type=AssetType.video,
+        language="en",
+        source_entity_type="transcript_turn",
+        source_entity_id=str(turn.id),
+        status="replaced",
+        generation_metadata={
+            "transcript_version_id": str(transcript.id),
+            "visual_role": "video_primary",
+            "prompt_inputs": {"camera_view": "speaker_medium"},
+        },
+    )
+    wide_primary = Asset(
+        episode_id=episode.id,
+        asset_type=AssetType.video,
+        language="en",
+        source_entity_type="transcript_turn",
+        source_entity_id=str(turn.id),
+        status="planned",
+        generation_metadata={
+            "transcript_version_id": str(transcript.id),
+            "visual_role": "video_primary",
+            "prompt_inputs": {"camera_view": "establishing_wide"},
+            "shot_plan": {"studio_panel_scene_asset_id": "scene-wide"},
+        },
+    )
+    episode.assets.extend([old_primary, wide_primary])
+    timeline = {
+        "media": {"composition_policy": "seated_studio_panel.v1"},
+        "segments": [
+            {
+                "id": "segment-host",
+                "source_turn_id": str(turn.id),
+                "segment_type": "discussion",
+                "video_asset_id": str(old_primary.id),
+                "camera_view": "establishing_wide",
+                "camera_action": "fly_in",
+                "direction": {
+                    "view": "establishing_wide",
+                    "action": "fly_in",
+                    "speaker_mouth_mode": "audio_driven_seated_panel",
+                },
+                "visual_layers": [
+                    {"role": "studio_scene", "asset_id": str(old_primary.id)},
+                    {"role": "wall_screen_broll", "asset_id": "broll-1"},
+                ],
+                "media_fingerprints": {},
+            }
+        ],
+        "tracks": {
+            "camera_direction": [
+                {
+                    "id": "segment-host",
+                    "camera_plate_asset_id": str(old_primary.id),
+                    "view": "speaker_centered",
+                    "action": "cut",
+                }
+            ],
+            "broll_content": [
+                {
+                    "id": "broll-content-1",
+                    "asset_id": "broll-1",
+                    "source_in_ms": 1375,
+                    "source_out_ms": 9375,
+                }
+            ],
+        },
+    }
+
+    relinked = TimelineService(Settings())._relink_seated_panel_camera_media(
+        episode,
+        transcript,
+        timeline,
+    )
+
+    segment = relinked["segments"][0]
+    assert segment["video_asset_id"] == str(wide_primary.id)
+    assert segment["studio_panel_scene_asset_id"] == "scene-wide"
+    assert segment["direction"]["view"] == "establishing_wide"
+    assert segment["direction"]["action"] == "fly_in"
+    assert segment["visual_layers"][0]["role"] == "video_primary"
+    assert segment["visual_layers"][0]["asset_id"] == str(wide_primary.id)
+    assert segment["visual_layers"][1] == {
+        "role": "wall_screen_broll",
+        "asset_id": "broll-1",
+    }
+    assert "camera_plate_asset_id" not in relinked["tracks"]["camera_direction"][0]
+    assert relinked["tracks"]["camera_direction"][0]["linked_segment_id"] == (
+        "segment-host"
+    )
+    assert relinked["tracks"]["camera_direction"][0]["view"] == "establishing_wide"
+    assert relinked["tracks"]["camera_direction"][0]["action"] == "fly_in"
+    assert relinked["tracks"]["broll_content"] == timeline["tracks"]["broll_content"]
+    assert timeline["segments"][0]["video_asset_id"] == str(old_primary.id)
+
+
 def test_timeline_build_rejects_pending_review_transcript(tmp_path: Path) -> None:
     settings = Settings(object_storage_local_path=str(tmp_path / "object-store"))
     episode = EpisodeRepository().create(

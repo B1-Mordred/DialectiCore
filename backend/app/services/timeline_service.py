@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -114,13 +115,18 @@ class TimelineService:
         if not isinstance(transcript_id, str):
             raise ValueError("timeline must include transcript_version_id")
         transcript = self._transcript_by_id(episode, UUID(transcript_id))
-        raw_segments = request.timeline.get("segments")
+        request_timeline = self._relink_seated_panel_camera_media(
+            episode,
+            transcript,
+            request.timeline,
+        )
+        raw_segments = request_timeline.get("segments")
         if not isinstance(raw_segments, list):
             raise ValueError("timeline must include a segments array")
-        if not isinstance(request.timeline.get("tracks"), dict):
+        if not isinstance(request_timeline.get("tracks"), dict):
             raise ValueError("timeline must include tracks")
         segments = self._normalize_timeline_segments(raw_segments)
-        tracks = self._normalize_timeline_tracks(request.timeline["tracks"])
+        tracks = self._normalize_timeline_tracks(request_timeline["tracks"])
         self._validate_timeline_track_resources(episode, segments, tracks)
 
         latest = self._latest_timeline_asset(episode, transcript)
@@ -129,7 +135,7 @@ class TimelineService:
             latest.updated_at = datetime.now(UTC)
 
         timeline = {
-            **request.timeline,
+            **request_timeline,
             "id": str(uuid4()),
             "schema_version": request.timeline.get("schema_version", "episode_timeline.v1"),
             "episode_id": str(episode.id),
@@ -183,6 +189,147 @@ class TimelineService:
         )
         episode.updated_at = datetime.now(UTC)
         return episode
+
+    def _relink_seated_panel_camera_media(
+        self,
+        episode: Episode,
+        transcript: TranscriptVersion,
+        timeline: dict,
+    ) -> dict:
+        """Bind edited panel directions to the current matching per-turn source.
+
+        The native B1 clips are camera-specific.  An immutable timeline edit may
+        therefore keep all editorial timing and parallel tracks, but it must not
+        keep an older source whose requested camera differs from the UI choice.
+        Planned/submitted sources are intentionally linkable; render preflight
+        blocks until their provider result is complete and verified.
+        """
+        media = timeline.get("media") if isinstance(timeline, dict) else None
+        directing = episode.definition.media.directing
+        seated_panel = (
+            isinstance(media, dict)
+            and media.get("composition_policy") == "seated_studio_panel.v1"
+        ) or (
+            directing.mode == "studio_directed"
+            and directing.studio_layout == "seated_panel"
+        )
+        if not seated_panel:
+            return timeline
+        relinked = copy.deepcopy(timeline)
+        relinked_media = relinked.get("media")
+        if not isinstance(relinked_media, dict):
+            relinked_media = {}
+            relinked["media"] = relinked_media
+        relinked_media["composition_policy"] = "seated_studio_panel.v1"
+        assets = list(reversed(episode.assets))
+        camera_asset_by_segment_id: dict[str, str] = {}
+        direction_by_segment_id: dict[str, tuple[str, str]] = {}
+        for segment in relinked.get("segments", []):
+            if not isinstance(segment, dict) or segment.get("segment_type") == "topic_primer":
+                continue
+            turn_id = str(segment.get("source_turn_id") or "")
+            direction = segment.get("direction")
+            desired_view = self._canonical_seated_panel_camera_view(
+                (direction.get("view") if isinstance(direction, dict) else None)
+                or segment.get("camera_view")
+                or "speaker_medium"
+            )
+            primary = next(
+                (
+                    asset
+                    for asset in assets
+                    if asset.status != "replaced"
+                    and asset.source_entity_type == "transcript_turn"
+                    and asset.source_entity_id == turn_id
+                    and asset.language == transcript.language
+                    and asset.generation_metadata.get("transcript_version_id") == str(transcript.id)
+                    and asset.generation_metadata.get("visual_role") == "video_primary"
+                    and asset.generation_metadata.get("prompt_inputs", {}).get("camera_view")
+                    == desired_view
+                ),
+                None,
+            )
+            if primary is None:
+                continue
+            old_primary_id = str(segment.get("video_asset_id") or "")
+            primary_id = str(primary.id)
+            shot_plan = self._shot_plan_for_asset(primary)
+            segment["video_asset_id"] = primary_id
+            segment["studio_panel_scene_asset_id"] = shot_plan.get(
+                "studio_panel_scene_asset_id",
+                segment.get("studio_panel_scene_asset_id"),
+            )
+            segment["camera_view"] = desired_view
+            segment["camera_action"] = str(
+                (direction.get("action") if isinstance(direction, dict) else None)
+                or segment.get("camera_action")
+                or "cut"
+            )
+            if not isinstance(direction, dict):
+                direction = {}
+                segment["direction"] = direction
+            direction.update(
+                {
+                    "view": desired_view,
+                    "action": segment["camera_action"],
+                    "speaker_mouth_mode": "audio_driven_seated_panel",
+                }
+            )
+            preserved_layers = [
+                layer
+                for layer in segment.get("visual_layers", [])
+                if isinstance(layer, dict)
+                and layer.get("role") not in {"video_primary", "studio_scene"}
+                and str(layer.get("asset_id") or "") != old_primary_id
+            ]
+            segment["visual_layers"] = [
+                *self._seated_panel_visual_layers(primary),
+                *preserved_layers,
+            ]
+            fingerprints = segment.get("media_fingerprints")
+            if not isinstance(fingerprints, dict):
+                fingerprints = {}
+                segment["media_fingerprints"] = fingerprints
+            fingerprints["video_primary"] = self._asset_fingerprint(primary)
+            camera_asset_by_segment_id[str(segment.get("id") or "")] = primary_id
+            direction_by_segment_id[str(segment.get("id") or "")] = (
+                desired_view,
+                segment["camera_action"],
+            )
+        tracks = relinked.get("tracks")
+        if isinstance(tracks, dict):
+            for clip in tracks.get("camera_direction", []):
+                if not isinstance(clip, dict):
+                    continue
+                clip_id = str(clip.get("id") or "")
+                linked_segment_id = str(clip.get("linked_segment_id") or "")
+                if not linked_segment_id:
+                    if clip_id in camera_asset_by_segment_id:
+                        linked_segment_id = clip_id
+                    elif (
+                        clip_id.startswith("camera-")
+                        and clip_id[7:] in camera_asset_by_segment_id
+                    ):
+                        linked_segment_id = clip_id[7:]
+                if linked_segment_id in camera_asset_by_segment_id:
+                    clip["linked_segment_id"] = linked_segment_id
+                    # The segment's video_primary already is the exact native
+                    # camera source. Reapplying it as an alternate plate would
+                    # discard rear-screen graphics and B-roll layers.
+                    clip.pop("camera_plate_asset_id", None)
+                if linked_segment_id in direction_by_segment_id:
+                    clip["view"], clip["action"] = direction_by_segment_id[
+                        linked_segment_id
+                    ]
+        return relinked
+
+    @staticmethod
+    def _canonical_seated_panel_camera_view(value: object) -> str:
+        view = str(value or "speaker_medium")
+        return {
+            "speaker_centered": "speaker_medium",
+            "speaker_close": "speaker_close_up",
+        }.get(view, view)
 
     def _normalize_timeline_segments(self, segments: list) -> list[dict]:
         normalized: list[dict] = []

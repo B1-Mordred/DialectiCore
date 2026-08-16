@@ -5440,10 +5440,56 @@ async def update_episode_timeline(
     request: TimelineUpdateRequest,
     repo: RepositoryDep,
     timeline_service: TimelineServiceDep,
+    comfyui: ComfyUiServiceDep,
 ) -> Episode:
     try:
         episode = repo.get(episode_id)
+        before_asset_ids = {str(asset.id) for asset in episode.assets}
+        media = request.timeline.get("media")
+        seated_panel = (
+            isinstance(media, dict)
+            and media.get("composition_policy") == "seated_studio_panel.v1"
+        ) or (
+            episode.definition.media.directing.mode == "studio_directed"
+            and episode.definition.media.directing.studio_layout == "seated_panel"
+        )
+        if seated_panel:
+            episode = comfyui.plan_visual_assets(
+                episode,
+                VisualAssetPlanRequest(
+                    transcript_version_id=UUID(
+                        str(request.timeline["transcript_version_id"])
+                    ),
+                    user_id=request.user_id,
+                    regenerate=False,
+                ),
+                visual_profiles=repo.list_visual_profiles(),
+                workflows=repo.list_comfyui_workflows(),
+                timeline_override=request.timeline,
+            )
+        new_camera_asset_ids = [
+            asset.id
+            for asset in episode.assets
+            if str(asset.id) not in before_asset_ids
+            and asset.status == "planned"
+            and asset.generation_metadata.get("visual_role") == "video_primary"
+        ]
         updated = timeline_service.update_timeline(episode, request)
+        updated = repo.save(updated)
+        if new_camera_asset_ids:
+            updated = await comfyui.generate_visual_assets(
+                updated,
+                VisualGenerationRequest(
+                    transcript_version_id=UUID(str(request.timeline["transcript_version_id"])),
+                    asset_ids=new_camera_asset_ids,
+                    user_id=request.user_id,
+                    regenerate=False,
+                    fallback_on_failure=False,
+                ),
+                endpoints=repo.list_comfyui_endpoints(),
+                workflows=repo.list_comfyui_workflows(),
+                visual_profiles=repo.list_visual_profiles(),
+            )
         return repo.save(updated)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="episode not found") from exc

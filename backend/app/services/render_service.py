@@ -54,10 +54,15 @@ class RenderService:
         is_talkshow_timeline = timeline_asset.source_entity_type == "transcript_version"
         if is_talkshow_timeline:
             self._ensure_timeline_integrity_passes(episode, timeline_asset)
-            self._materialized_timeline_for_render(
+            timeline = self._materialized_timeline_for_render(
                 episode,
                 self._timeline_json(timeline_asset),
             )
+            if (
+                timeline.get("media", {}).get("composition_policy")
+                == "seated_studio_panel.v1"
+            ):
+                self._ensure_studio_camera_renderable(episode, timeline)
         if (
             is_talkshow_timeline
             and request.render_type == "final"
@@ -264,7 +269,7 @@ class RenderService:
         manifest = self._render_manifest(
             episode=episode,
             timeline_asset=timeline_asset,
-            timeline=timeline,
+            timeline=render_timeline,
             preset=preset,
             request=request,
             render_id=render_id,
@@ -304,7 +309,7 @@ class RenderService:
         probe = self._probe_render(stored_render.path)
         probe["programme_signal"] = self._programme_signal_probe(
             stored_render.path,
-            timeline,
+            render_timeline,
         )
         asset = queued_asset or Asset(
             episode_id=episode.id,
@@ -345,7 +350,7 @@ class RenderService:
         )
         caption_track = self._store_render_caption_track(
             episode=episode,
-            timeline=timeline,
+            timeline=render_timeline,
             render_asset=asset,
             render_id=render_id,
         )
@@ -383,7 +388,7 @@ class RenderService:
         qc = self._render_qc(
             episode=episode,
             render_asset=asset,
-            timeline=timeline,
+            timeline=render_timeline,
             preset=preset,
             probe=probe,
         )
@@ -540,6 +545,13 @@ class RenderService:
                 and int(clip.get("end_ms") or 0) > segment_start
                 and str(clip.get("linked_segment_id") or "") in {"", str(segment.get("id") or "")}
             ]
+            overlapping_contents = [
+                clip
+                for clip in content_clips
+                if overlapping_presentations
+                and int(clip.get("start_ms") or 0) < segment_end
+                and int(clip.get("end_ms") or 0) > segment_start
+            ]
             overlapping_graphics = [
                 clip
                 for clip in screen_clips
@@ -558,6 +570,7 @@ class RenderService:
             ]
             all_overlapping = [
                 *overlapping_presentations,
+                *overlapping_contents,
                 *overlapping_graphics,
                 *overlapping_cameras,
             ]
@@ -599,6 +612,25 @@ class RenderService:
                     content = content_by_id.get(
                         str(active_presentation.get("content_clip_id") or "")
                     )
+                    if content is None:
+                        # Presentation and content are independent editorial
+                        # tracks. A presentation clip without an explicit link
+                        # displays whichever content clip owns this programme
+                        # time; overlapping content transitions prefer the
+                        # newly-started clip.
+                        content = next(
+                            (
+                                clip
+                                for clip in sorted(
+                                    overlapping_contents,
+                                    key=lambda item: int(item.get("start_ms") or 0),
+                                    reverse=True,
+                                )
+                                if int(clip.get("start_ms") or 0) <= piece_start
+                                and int(clip.get("end_ms") or 0) >= piece_end
+                            ),
+                            None,
+                        )
                     if content is not None:
                         piece = self._apply_parallel_broll_to_piece(
                             piece=piece,
@@ -1103,6 +1135,46 @@ class RenderService:
                     missing_roles.append(
                         {"segment_id": segment.get("id"), "role": "audio_driven_seated_panel"}
                     )
+                elif primary is not None:
+                    desired_view = str(
+                        (direction.get("view") if isinstance(direction, dict) else None)
+                        or segment.get("camera_view")
+                        or "speaker_medium"
+                    )
+                    prompt_inputs = primary.generation_metadata.get("prompt_inputs")
+                    requested_view = (
+                        prompt_inputs.get("camera_view")
+                        if isinstance(prompt_inputs, dict)
+                        else None
+                    )
+                    actual_view = primary.generation_metadata.get(
+                        "provider_studio_panel_actual_camera_view"
+                    )
+                    expected_provider_view = (
+                        "speaker_close" if desired_view == "speaker_close_up" else desired_view
+                    )
+                    if primary.status != "completed":
+                        missing_roles.append(
+                            {"segment_id": segment.get("id"), "role": "completed_camera_source"}
+                        )
+                    elif primary.source_entity_id != str(segment.get("source_turn_id") or ""):
+                        missing_roles.append(
+                            {"segment_id": segment.get("id"), "role": "matching_turn_source"}
+                        )
+                    elif requested_view != desired_view:
+                        missing_roles.append(
+                            {"segment_id": segment.get("id"), "role": "requested_camera_view"}
+                        )
+                    elif (
+                        primary.generation_metadata.get(
+                            "provider_studio_panel_camera_composition"
+                        )
+                        == "native_scene_camera"
+                        and actual_view != expected_provider_view
+                    ):
+                        missing_roles.append(
+                            {"segment_id": segment.get("id"), "role": "verified_camera_view"}
+                        )
                 scene = asset_by_id.get(str(segment.get("studio_panel_scene_asset_id") or ""))
                 if not self._asset_path_exists(scene):
                     missing_roles.append(
@@ -3277,7 +3349,7 @@ class RenderService:
                 "-map",
                 "1:a:0",
                 "-vf",
-                self._scene_video_filter(
+                self._final_video_filter(
                     episode=episode,
                     timeline=timeline,
                     preset=preset,
@@ -3308,6 +3380,29 @@ class RenderService:
             except (subprocess.SubprocessError, OSError) as exc:
                 raise ValueError(f"ffmpeg render failed: {exc}") from exc
             return output_path.read_bytes()
+
+    def _final_video_filter(
+        self,
+        *,
+        episode: Episode,
+        timeline: dict,
+        preset: RenderPreset,
+        duration_seconds: float,
+    ) -> str:
+        # The timeline, not the shortest upstream clip, owns programme length.
+        # Pad at the final mux boundary as a second line of defence so a short
+        # primer/B-roll/scene plate cannot terminate video before dialogue.
+        scene_filter = self._scene_video_filter(
+            episode=episode,
+            timeline=timeline,
+            preset=preset,
+            duration_seconds=duration_seconds,
+        )
+        duration = max(duration_seconds, 0.001)
+        return (
+            f"tpad=stop_mode=clone:stop_duration={duration:.3f},"
+            f"trim=duration={duration:.3f},setpts=PTS-STARTPTS,{scene_filter}"
+        )
 
     def _visual_plate_path(
         self,
@@ -3719,6 +3814,9 @@ class RenderService:
                     preset=preset,
                     animation=layer.get("animation"),
                     layout_slot=layer.get("layout_slot"),
+                    crop_y_fraction=(
+                        0.33 if layer.get("purpose") == "branded_show_identity" else 0.5
+                    ),
                 )
             )
             overlay_x, overlay_y = self._animated_overlay_position(
@@ -3787,13 +3885,18 @@ class RenderService:
         preset: RenderPreset,
         animation: object,
         layout_slot: object = None,
+        crop_y_fraction: float = 0.5,
     ) -> str:
         filters = [
             f"[{input_index}:v]scale={width}:{height}:force_original_aspect_ratio=increase",
-            f"crop={width}:{height}",
-            f"fps={preset.fps}",
-            "format=rgba",
+            f"crop={width}:{height}:0:(ih-oh)*{crop_y_fraction:.2f}",
         ]
+        filters.extend(
+            [
+                f"fps={preset.fps}",
+                "format=rgba",
+            ]
+        )
         if isinstance(animation, dict) and animation.get("rendered_scale_keyframes") is True:
             filters.extend(
                 self._overlay_scale_keyframe_filters(
@@ -4554,9 +4657,27 @@ class RenderService:
             and primary.generation_metadata.get("provider_studio_panel_camera_composition")
             == "native_scene_camera"
         ):
-            # B1 already rendered the configured speaker/two-shot framing.
-            # Cropping it again would discard the native camera coverage.
-            return None
+            # The view itself comes from B1's camera-specific source. Editorial
+            # motion remains a render-stage operation and must still be visible
+            # when the UI selects a push, pull, fly-in, or pan.
+            if action not in motion_actions:
+                return None
+            return {
+                "schema_version": "dialecticore.virtual_camera.v3",
+                "view": view,
+                "scale": 1.10 if action == "fly_in" else 1.07,
+                "focus_x": 0.5,
+                "focus_y": 0.5,
+                "focus_source": "native_camera_frame",
+                "speaker_participant_id": segment.get("speaker_id"),
+                "context_participant_ids": [],
+                "motion": action,
+                "focus_start_x": 0.5,
+                "focus_start_y": 0.5,
+                "target_participant_id": direction.get("target_participant_id"),
+                "easing": direction.get("easing") or "ease_in_out",
+                "native_camera_source": True,
+            }
         shot_plan = (
             primary.generation_metadata.get("shot_plan")
             if primary is not None and isinstance(primary.generation_metadata, dict)
@@ -7385,6 +7506,7 @@ class RenderService:
                 and asset.status == "completed"
                 and asset.generation_metadata.get("render_type") == request.render_type
                 and asset.generation_metadata.get("preset_id") == preset.id
+                and self._render_asset_review_scope(asset) == request.review_scope
             ),
             None,
         )
@@ -7406,6 +7528,7 @@ class RenderService:
                 and asset.status in {"submitted", "running", "completed"}
                 and asset.generation_metadata.get("render_type") == request.render_type
                 and asset.generation_metadata.get("preset_id") == preset.id
+                and self._render_asset_review_scope(asset) == request.review_scope
             ),
             None,
         )
@@ -7428,9 +7551,22 @@ class RenderService:
             or asset.source_entity_id != str(timeline_asset.id)
             or asset.generation_metadata.get("render_type") != request.render_type
             or asset.generation_metadata.get("preset_id") != preset.id
+            or self._render_asset_review_scope(asset) != request.review_scope
         ):
             raise ValueError("render request does not match target timeline or preset")
         return asset
+
+    @staticmethod
+    def _render_asset_review_scope(asset: Asset) -> str:
+        scope = asset.generation_metadata.get("review_scope")
+        if isinstance(scope, str):
+            return scope
+        render_request = asset.generation_metadata.get("render_request")
+        if isinstance(render_request, dict) and isinstance(
+            render_request.get("review_scope"), str
+        ):
+            return str(render_request["review_scope"])
+        return "full_timeline"
 
     @staticmethod
     def _render_request_payload(request: RenderRequest) -> dict:

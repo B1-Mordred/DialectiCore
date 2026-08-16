@@ -9,6 +9,14 @@ export type TrimmableTimelineClip = {
 
 const MINIMUM_CLIP_DURATION_MS = 100;
 
+export function canonicalCameraView(value: unknown): string {
+  const view = String(value ?? "speaker_medium");
+  return {
+    speaker_centered: "speaker_medium",
+    speaker_close: "speaker_close_up",
+  }[view] ?? view;
+}
+
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(Math.max(value, minimum), Math.max(minimum, maximum));
 }

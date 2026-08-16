@@ -62,7 +62,11 @@ function timelineIntegrityPasses(
     media &&
     typeof media === "object" &&
     !Array.isArray(media) &&
-    ["studio_camera_cuts.v1", "studio_camera_cuts.v2"].includes(
+    [
+      "studio_camera_cuts.v1",
+      "studio_camera_cuts.v2",
+      "seated_studio_panel.v1",
+    ].includes(
       String((media as Record<string, unknown>).composition_policy),
     );
   if (!requiresIntegrityGate) {
@@ -75,7 +79,7 @@ function timelineIntegrityPasses(
         quality.check_type === "timeline_integrity" && quality.target_id === timeline.id,
     );
   return Boolean(
-    result && result.status === "pass" && result.severity !== "fail",
+    result && result.status !== "fail" && result.severity !== "fail",
   );
 }
 
@@ -127,6 +131,7 @@ function latestRenderForTimeline(
       asset.source_entity_type === "timeline_asset" &&
       asset.source_entity_id === timeline.id &&
       asset.generation_metadata?.render_type === renderType &&
+      asset.generation_metadata?.review_scope === "full_timeline" &&
       !renderIntegrityFailed(episode, asset) &&
       (presetId === undefined ||
         asset.generation_metadata?.preset_id === presetId),
@@ -147,6 +152,7 @@ function activeOrCompletedRenderForTimeline(
       asset.source_entity_type === "timeline_asset" &&
       asset.source_entity_id === timeline.id &&
       asset.generation_metadata?.render_type === renderType &&
+      asset.generation_metadata?.review_scope === "full_timeline" &&
       (asset.status !== "completed" || !renderIntegrityFailed(episode, asset)) &&
       asset.generation_metadata?.preset_id === presetId,
   );

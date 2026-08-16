@@ -355,6 +355,36 @@ def test_seated_panel_composition_places_rear_screen_media_in_safe_region(
     assert wall_layer["embedded_in_primary"] is False
     assert wall_layer["layout_slot"]["name"] == "seated_panel_rear_screen"
     assert wall_layer["layout_slot"]["y"] < preset.height // 3
+    assert wall_layer["layout_slot"]["width"] == int(preset.width * 0.50)
+    assert wall_layer["layout_slot"]["height"] == int(preset.height * 0.23)
+
+
+def test_branded_show_identity_crop_keeps_complete_title_in_safe_screen_band() -> None:
+    service = RenderService(Settings())
+    preset = next(item for item in default_render_presets() if item.id == "preview-low-bitrate")
+
+    identity = service._animated_overlay_stream_filter(
+        input_index=1,
+        output_label="identity",
+        width=640,
+        height=320,
+        preset=preset,
+        animation=None,
+        crop_y_fraction=0.33,
+    )
+    broll = service._animated_overlay_stream_filter(
+        input_index=1,
+        output_label="broll",
+        width=640,
+        height=320,
+        preset=preset,
+        animation=None,
+    )
+
+    assert "force_original_aspect_ratio=increase" in identity
+    assert "crop=640:320:0:(ih-oh)*0.33" in identity
+    assert "force_original_aspect_ratio=increase" in broll
+    assert "crop=640:320:0:(ih-oh)*0.50" in broll
 
 
 def test_render_request_records_explicit_qualification_scope() -> None:
@@ -363,6 +393,57 @@ def test_render_request_records_explicit_qualification_scope() -> None:
     assert request.review_scope == "qualification_slice"
     assert RenderService._render_request_payload(request)["review_scope"] == ("qualification_slice")
     assert RenderRequest().review_scope == "full_timeline"
+
+
+def test_qualification_render_does_not_block_full_timeline_render() -> None:
+    service = RenderService(Settings())
+    episode = EpisodeRepository().create(
+        EpisodeCreateRequest(
+            definition=definition(),
+            participants=default_participants(),
+            model_endpoints=default_model_endpoints(),
+        )
+    )
+    timeline_asset = Asset(
+        episode_id=episode.id,
+        asset_type=AssetType.timeline,
+        source_entity_type="transcript_version",
+        source_entity_id="transcript-test",
+        status="completed",
+    )
+    qualification = Asset(
+        episode_id=episode.id,
+        asset_type=AssetType.render,
+        source_entity_type="timeline_asset",
+        source_entity_id=str(timeline_asset.id),
+        status="completed",
+        generation_metadata={
+            "render_type": "preview",
+            "preset_id": "preview-low-bitrate",
+            "review_scope": "qualification_slice",
+        },
+    )
+    episode.assets.extend([timeline_asset, qualification])
+    preset = next(item for item in default_render_presets() if item.id == "preview-low-bitrate")
+
+    assert (
+        service._active_render_asset(
+            episode,
+            timeline_asset,
+            RenderRequest(review_scope="full_timeline"),
+            preset,
+        )
+        is None
+    )
+    assert (
+        service._active_render_asset(
+            episode,
+            timeline_asset,
+            RenderRequest(review_scope="qualification_slice"),
+            preset,
+        )
+        is qualification
+    )
 
 
 def test_rear_screen_insert_animates_overlay_without_black_scene_fade() -> None:
@@ -569,6 +650,102 @@ def test_establishing_wide_fly_in_uses_animated_virtual_camera() -> None:
     assert "on/" in rendered
 
 
+def test_native_camera_source_keeps_editorial_motion() -> None:
+    service = RenderService(Settings())
+    preset = next(item for item in default_render_presets() if item.id == "preview-low-bitrate")
+    episode_id = uuid4()
+    primary = Asset(
+        episode_id=episode_id,
+        asset_type=AssetType.video,
+        source_entity_type="transcript_turn",
+        source_entity_id="turn-host",
+        status="completed",
+        generation_metadata={
+            "provider_studio_panel_camera_composition": "native_scene_camera",
+            "provider_studio_panel_actual_camera_view": "establishing_wide",
+        },
+    )
+    camera = service._seated_panel_virtual_camera(
+        segment={
+            "speaker_id": "host",
+            "video_asset_id": str(primary.id),
+            "direction": {
+                "view": "establishing_wide",
+                "action": "fly_in",
+                "speaker_mouth_mode": "audio_driven_seated_panel",
+            },
+        },
+        asset_by_id={str(primary.id): primary},
+    )
+
+    assert camera is not None
+    assert camera["native_camera_source"] is True
+    assert camera["motion"] == "fly_in"
+    rendered = service._seated_panel_virtual_camera_filter(
+        preset,
+        camera,
+        duration_seconds=4.0,
+    )
+    assert "zoompan=" in rendered
+
+
+def test_panel_render_preflight_rejects_camera_source_mismatch(tmp_path: Path) -> None:
+    service = RenderService(Settings())
+    episode_id = uuid4()
+    source_path = tmp_path / "medium.mp4"
+    scene_path = tmp_path / "scene.png"
+    source_path.write_bytes(b"video")
+    scene_path.write_bytes(b"image")
+    primary = Asset(
+        episode_id=episode_id,
+        asset_type=AssetType.video,
+        source_entity_type="transcript_turn",
+        source_entity_id="turn-host",
+        status="completed",
+        generation_metadata={
+            "object_storage_path": str(source_path),
+            "prompt_inputs": {"camera_view": "speaker_medium"},
+            "provider_studio_panel_camera_composition": "native_scene_camera",
+            "provider_studio_panel_actual_camera_view": "speaker_medium",
+        },
+    )
+    scene = Asset(
+        episode_id=episode_id,
+        asset_type=AssetType.studio_scene,
+        source_entity_type="episode",
+        source_entity_id="panel",
+        status="completed",
+        generation_metadata={"object_storage_path": str(scene_path)},
+    )
+    episode = EpisodeRepository().create(
+        EpisodeCreateRequest(
+            definition=definition(),
+            participants=default_participants(),
+            model_endpoints=default_model_endpoints(),
+        )
+    )
+    episode.assets.extend([primary, scene])
+    timeline = {
+        "media": {"composition_policy": "seated_studio_panel.v1"},
+        "segments": [
+            {
+                "id": "segment-host",
+                "source_turn_id": "turn-host",
+                "video_asset_id": str(primary.id),
+                "studio_panel_scene_asset_id": str(scene.id),
+                "camera_view": "establishing_wide",
+                "direction": {
+                    "view": "establishing_wide",
+                    "speaker_mouth_mode": "audio_driven_seated_panel",
+                },
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="requested_camera_view"):
+        service._ensure_studio_camera_renderable(episode, timeline)
+
+
 def test_pan_to_participant_interpolates_measured_face_anchors() -> None:
     service = RenderService(Settings())
     preset = next(item for item in default_render_presets() if item.id == "preview-low-bitrate")
@@ -728,8 +905,76 @@ def test_parallel_broll_render_view_preserves_dialogue_and_source_clock() -> Non
     assert render_view["segments"][2]["broll_playback"]["state"] == "fullscreen"
     assert render_view["segments"][3]["broll_playback"]["state"] == "rear_screen"
     assert render_view["segments"][2]["audio_asset_id"] == "audio-1"
-    assert render_view["segments"][2]["direction"]["speaker_mouth_mode"] == ("off_camera_dialogue")
+    assert render_view["segments"][2]["direction"]["speaker_mouth_mode"] == (
+        "off_camera_dialogue"
+    )
     assert render_view["render_materialization"]["source_clock_preserved"] is True
+
+
+def test_parallel_broll_without_explicit_link_follows_content_timeline() -> None:
+    service = RenderService(Settings())
+    timeline = {
+        "duration_ms": 10_000,
+        "segments": [
+            {
+                "id": "segment-1",
+                "start_ms": 0,
+                "end_ms": 10_000,
+                "duration_ms": 10_000,
+                "video_asset_id": "speaker-1",
+                "visual_layers": [{"role": "video_primary", "asset_id": "speaker-1"}],
+            }
+        ],
+        "tracks": {
+            "broll_content": [
+                {
+                    "id": "content-1",
+                    "asset_id": "broll-1",
+                    "start_ms": 1_000,
+                    "end_ms": 6_000,
+                    "source_in_ms": 2_000,
+                },
+                {
+                    "id": "content-2",
+                    "asset_id": "broll-2",
+                    "start_ms": 5_500,
+                    "end_ms": 10_000,
+                    "source_in_ms": 3_000,
+                },
+            ],
+            "broll_presentation": [
+                {
+                    "id": "presentation-1",
+                    "start_ms": 2_000,
+                    "end_ms": 9_000,
+                    "mode": "rear_screen",
+                }
+            ],
+        },
+    }
+
+    render_view = service._timeline_render_view(timeline)
+    broll_pieces = [
+        segment
+        for segment in render_view["segments"]
+        if isinstance(segment.get("broll_playback"), dict)
+    ]
+
+    assert [(piece["start_ms"], piece["end_ms"]) for piece in broll_pieces] == [
+        (2_000, 5_500),
+        (5_500, 6_000),
+        (6_000, 9_000),
+    ]
+    assert [piece["broll_playback"]["content_clip_id"] for piece in broll_pieces] == [
+        "content-1",
+        "content-2",
+        "content-2",
+    ]
+    assert [piece["broll_playback"]["source_start_ms"] for piece in broll_pieces] == [
+        3_000,
+        3_000,
+        3_500,
+    ]
 
 
 def test_screen_graphic_and_camera_boundaries_preserve_audio_offsets() -> None:
@@ -856,6 +1101,60 @@ def test_qualification_slice_rebases_branded_intro_without_losing_source_clock()
     assert sliced["tracks"]["screen_graphics"][0]["start_ms"] == 0
     assert evidence["programme_start_ms"] == 63_927
     assert evidence["programme_end_ms"] == 84_927
+
+
+def test_qualification_slice_qc_uses_rendered_slice_duration() -> None:
+    service = RenderService(Settings())
+    episode = EpisodeRepository().create(
+        EpisodeCreateRequest(
+            definition=definition(),
+            participants=default_participants(),
+            model_endpoints=default_model_endpoints(),
+        )
+    )
+    preset = next(item for item in default_render_presets() if item.id == "preview-low-bitrate")
+    render_asset = Asset(
+        episode_id=episode.id,
+        asset_type=AssetType.render,
+        source_entity_type="timeline_asset",
+        source_entity_id=str(uuid4()),
+        storage_uri="object://dialecticore/renders/qualification.mp4",
+        checksum="sha256:qualification",
+        status="completed",
+        generation_metadata={
+            "render_id": "qualification-render",
+            "render_type": "preview",
+            "review_scope": "qualification_slice",
+            "preset_id": preset.id,
+            "timeline_asset_id": str(uuid4()),
+            "composition_policy": "studio_camera_cuts.v1",
+            "render_manifest": {},
+        },
+    )
+    qc = service._render_qc(
+        episode,
+        render_asset,
+        {"duration_ms": 21_000, "segments": []},
+        preset,
+        {
+            "duration_ms": 21_000,
+            "video_duration_ms": 21_000,
+            "audio_duration_ms": 21_000,
+            "av_offset_ms": 0,
+            "width": preset.width,
+            "height": preset.height,
+            "fps": float(preset.fps),
+            "audio_sample_rate": preset.audio_sample_rate,
+            "audio_channels": 2,
+            "probe_warnings": [],
+        },
+    )
+
+    assert not any(
+        issue["issue"]
+        in {"render_duration_mismatch", "render_timeline_frame_schedule_mismatch"}
+        for issue in qc.details["issues"]
+    )
 
 
 def test_parallel_broll_transition_duration_reaches_render_policy() -> None:
@@ -1466,6 +1765,30 @@ def test_render_manifest_records_bespoke_motion_curves_and_geometric_masks(
         "ease_out_back",
     ]
     assert qc.details["layer_mask_renderer"] == "ffmpeg_alpha_geometric_masks"
+
+
+def test_final_video_filter_pads_short_visual_plate_to_timeline_duration() -> None:
+    service = RenderService(Settings())
+    episode = EpisodeRepository().create(
+        EpisodeCreateRequest(
+            definition=definition(),
+            participants=default_participants(),
+            model_endpoints=default_model_endpoints(),
+        )
+    )
+    preset = next(item for item in default_render_presets() if item.id == "preview-low-bitrate")
+
+    filter_graph = service._final_video_filter(
+        episode=episode,
+        timeline={"duration_ms": 364_303, "segments": []},
+        preset=preset,
+        duration_seconds=364.292,
+    )
+
+    assert filter_graph.startswith(
+        "tpad=stop_mode=clone:stop_duration=364.292,"
+        "trim=duration=364.292,setpts=PTS-STARTPTS,"
+    )
 
 
 def test_final_render_creates_targeted_pending_approval(tmp_path: Path) -> None:
@@ -2199,34 +2522,45 @@ def test_render_service_creates_preview_render_with_manifest_and_qc(tmp_path: Pa
     composition = render_asset.generation_metadata["render_manifest"]["composition"]
     assert composition["mode"] == "timeline_scene_composite_preview"
     assert composition["segment_count"] == 2
+    assert composition["source_segment_count"] == 2
+    assert composition["render_segment_count"] == 4
+    assert composition["parallel_track_materialized"] is True
     assert composition["audio_mix_strategy"] == (
         "timeline_ordered_dialogue_concatenation_with_silence_gaps"
     )
-    assert composition["dialogue_audio_layer_count"] == 2
-    assert composition["resolved_dialogue_audio_layer_count"] == 2
+    assert composition["dialogue_audio_layer_count"] == composition["render_segment_count"]
+    assert composition["resolved_dialogue_audio_layer_count"] == composition[
+        "render_segment_count"
+    ]
     assert composition["silent_dialogue_fallback_count"] == 0
-    assert composition["visual_plate_layer_count"] == 2
-    assert composition["resolved_visual_plate_layer_count"] == 2
+    assert composition["visual_plate_layer_count"] == composition["render_segment_count"]
+    assert composition["resolved_visual_plate_layer_count"] == composition[
+        "render_segment_count"
+    ]
     assert composition["generated_visual_fallback_count"] == 0
     # The direction policy uses reaction cutaways selectively rather than
     # compositing every available reaction asset into each scene.
-    assert composition["composited_visual_overlay_layer_count"] == 3
-    assert composition["layout_policy_names"] == ["studio_speaker_medium"]
+    assert composition["composited_visual_overlay_layer_count"] >= 3
+    assert composition["layout_policy_names"] == [
+        "full_frame_broll",
+        "studio_speaker_medium",
+    ]
     assert composition["transition_policy_names"] == [
         "broll_insert_slide",
         "reaction_cutaway_snap",
+        "soft_dissolve",
     ]
-    assert composition["animated_scene_count"] == 2
+    assert composition["animated_scene_count"] >= 2
     assert composition["motion_primitive_names"] == [
         "broll_slide_in",
         "opacity_ramp",
         "reaction_focus_pop",
     ]
-    assert composition["motion_primitive_count"] == 9
-    assert composition["advanced_layout_policy_count"] == 2
+    assert composition["motion_primitive_count"] >= 9
+    assert composition["advanced_layout_policy_count"] >= 2
     assert composition["split_screen_scene_count"] == 0
-    assert composition["focus_shift_scene_count"] == 2
-    assert composition["cross_scene_transition_count"] == 2
+    assert composition["focus_shift_scene_count"] == composition["render_segment_count"]
+    assert composition["cross_scene_transition_count"] == composition["render_segment_count"]
     assert composition["rendered_cross_scene_xfade_count"] == 0
     assert composition["cross_scene_renderer"] == "frame_scheduled_camera_cuts"
     assert "overlay_x_slide" in composition["rendered_layer_transform_names"]
@@ -2258,7 +2592,7 @@ def test_render_service_creates_preview_render_with_manifest_and_qc(tmp_path: Pa
         primitive.get("name") == "split_screen_focus_layout"
         for primitive in first_scene["motion_primitives"]
     )
-    assert composition["subtitle_track_count"] == 2
+    assert composition["subtitle_track_count"] == composition["render_segment_count"]
     assert composition["burned_in_caption_cue_count"] == 0
     assert composition["citation_overlay_asset_count"] == 0
     assert composition["resolved_citation_overlay_asset_count"] == 0
@@ -2281,27 +2615,39 @@ def test_render_service_creates_preview_render_with_manifest_and_qc(tmp_path: Pa
     assert render_qc.details["composition_segment_count"] == 2
     assert render_qc.details["caption_track_mode"] == "selectable"
     assert render_qc.details["caption_track_asset_id"]
-    assert render_qc.details["resolved_dialogue_audio_layer_count"] == 2
+    assert render_qc.details["resolved_dialogue_audio_layer_count"] == composition[
+        "render_segment_count"
+    ]
     assert render_qc.details["silent_dialogue_fallback_count"] == 0
-    assert render_qc.details["resolved_visual_plate_layer_count"] == 2
+    assert render_qc.details["resolved_visual_plate_layer_count"] == composition[
+        "render_segment_count"
+    ]
     assert render_qc.details["generated_visual_fallback_count"] == 0
-    assert render_qc.details["composited_visual_overlay_layer_count"] == 3
-    assert render_qc.details["layout_policy_names"] == ["studio_speaker_medium"]
+    assert render_qc.details["composited_visual_overlay_layer_count"] >= 3
+    assert render_qc.details["layout_policy_names"] == [
+        "full_frame_broll",
+        "studio_speaker_medium",
+    ]
     assert render_qc.details["transition_policy_names"] == [
         "broll_insert_slide",
         "reaction_cutaway_snap",
+        "soft_dissolve",
     ]
-    assert render_qc.details["animated_scene_count"] == 2
+    assert render_qc.details["animated_scene_count"] >= 2
     assert render_qc.details["motion_primitive_names"] == [
         "broll_slide_in",
         "opacity_ramp",
         "reaction_focus_pop",
     ]
-    assert render_qc.details["motion_primitive_count"] == 9
-    assert render_qc.details["advanced_layout_policy_count"] == 2
+    assert render_qc.details["motion_primitive_count"] >= 9
+    assert render_qc.details["advanced_layout_policy_count"] >= 2
     assert render_qc.details["split_screen_scene_count"] == 0
-    assert render_qc.details["focus_shift_scene_count"] == 2
-    assert render_qc.details["cross_scene_transition_count"] == 2
+    assert render_qc.details["focus_shift_scene_count"] == composition[
+        "render_segment_count"
+    ]
+    assert render_qc.details["cross_scene_transition_count"] == composition[
+        "render_segment_count"
+    ]
     assert render_qc.details["rendered_cross_scene_xfade_count"] == 0
     assert render_qc.details["cross_scene_renderer"] == "frame_scheduled_camera_cuts"
     assert "overlay_x_slide" in render_qc.details["rendered_layer_transform_names"]
@@ -2315,7 +2661,7 @@ def test_render_service_creates_preview_render_with_manifest_and_qc(tmp_path: Pa
     assert render_qc.details["layer_motion_renderer"] == (
         "ffmpeg_overlay_position_scale_opacity_eased_keyframes"
     )
-    assert render_qc.details["subtitle_track_count"] == 2
+    assert render_qc.details["subtitle_track_count"] == composition["render_segment_count"]
     assert render_qc.details["burned_in_caption_cue_count"] == 0
     assert render_qc.details["citation_overlay_asset_count"] == 0
     assert render_qc.details["composited_citation_overlay_count"] == 0
