@@ -21,9 +21,11 @@ qualified speaking clip; only then may the other 20 failed clips be retried.
 - [x] (2026-08-16 00:27Z) Preserved bounded structured recovery evidence in B1; all 1,630 unit tests and complete local quality gates pass.
 - [x] (2026-08-16 00:24Z) Prevented DialectiCore fallback conversion for native directed visuals; all 56 ComfyUI service tests and Ruff pass.
 - [x] (2026-08-16 00:24Z) Deployed only media-manager v0.1.3 and proved authenticated recovery HTTP 200 with three stable 233 MiB samples.
-- [ ] Retry and qualify exactly one current speaking asset end to end.
-- [ ] Retry the remaining 20 current speaking assets only after the single-clip gate passes.
-- [ ] Run relevant test suites, update this plan, commit and push each source repository, and verify CI where configured.
+- [x] (2026-08-16 00:31Z) Deployed B1 source commit `f73dc16` as control-plane image `sha256:68ed6a4389fbe7682933cf0157454cf0aa461cb2c3a3e4c9c10254326c0f02c7` after the existing lease expired.
+- [x] (2026-08-16 00:37Z) Retried and qualified exactly one current speaking asset end to end as B1 job `job_7851d2d303d54fae83c25047d7df535f`.
+- [x] (2026-08-16 01:09Z) Retried the remaining 20 current speaking assets only after the single-clip gate passed; all 20 completed serially with zero failures.
+- [x] (2026-08-16 01:15Z) Audited all 21 current clips, proved idle recovery, removed the temporary admission override, and restored the normal B1 control-plane policy.
+- [ ] Commit and push the final evidence updates and verify CI plus local/remote commit equality.
 
 ## Surprises & Discoveries
 
@@ -33,6 +35,12 @@ qualified speaking clip; only then may the other 20 failed clips be retried.
   Evidence: the manager uses 256 MiB and the unloaded host reports approximately 233 MiB.
 - Observation: the first authenticated recovery with the new manager completed in about three seconds without loading either backend.
   Evidence: HTTP 200 reported samples `[233,233,233]`, zero loaded ComfyUI models, and a null resident MuseTalk model.
+- Observation: B1's 60-job hourly owner limit correctly blocked the first gate submission after the failed retry burst.
+  Evidence: admission returned `owner_rate_limit`, current 60, before creating GPU work. A temporary database policy override raises only the hourly ceiling to 100 for this bounded 21-job recovery; queue and active limits remain 20 and 3, and the override will be removed afterward.
+- Observation: the long-running MuseTalk container had lost CUDA access independently of the manager fix.
+  Evidence: its first admitted gate failed with `slow_conv2d_cpu not implemented for Half`; in-container `torch.cuda.is_available()` was false and NVML returned `Unknown Error`. Recreating only `media-lipsync` restored one Tesla P40 device and the next gate succeeded.
+- Observation: truthful new provider results can inherit an obsolete native-camera rejection flag from a previously masked result.
+  Evidence: the gate's real `lipsync_runtime_error` retained `native_camera_coverage_rejected=true` until `_apply_visual_result` was taught to clear the stale flag; the regression and all 56 ComfyUI service tests pass.
 
 ## Decision Log
 
@@ -48,8 +56,28 @@ qualified speaking clip; only then may the other 20 failed clips be retried.
 
 ## Outcomes & Retrospective
 
-Work is in progress. This section will record the exact images, commits, job IDs,
-clip checksum, qualification evidence, and any remaining failures.
+The recovery is complete. Manager image
+`b1-ai-hub/p40-media-manager:v0.1.3@sha256:bec3fb35922b8e41aa81e986380d9ae95ada8b690e2a7733b7a4f651f5451baa`
+accepts the measured idle state only after three stable samples, and B1 control
+plane source commit `f73dc16db43da6e360448773a424d8e270bf2322`
+preserves bounded failure evidence. DialectiCore commits `12e0db4` and `a4eba9b`
+keep native provider failures truthful and clear obsolete camera rejection state.
+
+The gate plus all 20 serial recovery jobs completed. DialectiCore now has exactly
+21 current `video_primary` assets, all completed and none with stale camera
+rejection metadata. A filesystem and ffprobe audit passed 21/21: SHA-256 matched,
+all clips are H.264/AAC at 1024x576 and 12 fps, duration matches the asset record,
+and all carry native scene-camera, intended-speaker, preserved-rear-screen, and
+audio-driven seated lip-sync evidence. The camera distribution is one
+establishing wide, five panel two-shots, and 15 speaker-medium shots. Face heights
+are 111 pixels for two-shots and 140-141 pixels for medium shots.
+
+Post-batch authenticated recovery returned HTTP 200 with VRAM samples
+`[233,233,233]`, no loaded ComfyUI models, and no resident MuseTalk model. GPU
+utilization was 0% and the 125 W cap remained applied. The temporary owner hourly
+limit used to move past the earlier failed-attempt burst was deleted; the B1
+control plane was then recreated alone and returned healthy, restoring its normal
+environment-backed 60-job default.
 
 ## Context and Orientation
 
@@ -120,6 +148,15 @@ P40 manager v0.1.3 image digest is
 `sha256:bec3fb35922b8e41aa81e986380d9ae95ada8b690e2a7733b7a4f651f5451baa`.
 B1 evidence source commit is `f73dc161e545bdd4e2bf65137a2b1e625306375d`.
 
+The single-clip gate is DialectiCore asset
+`344e4d35-770b-4c7a-a66b-6ec3e3a5315f`, B1 job
+`job_7851d2d303d54fae83c25047d7df535f`, and SHA-256
+`f45c0ff496a2be5344ae8a397647354017888cf5c4b0a66b6190d3dcb2f87bca`.
+It is H.264/AAC, 1024x576, 12 fps, 8.75 seconds, with 105 unique decoded
+frames. Its mouth crop changed above a 0.1 luma-difference threshold in 103 of
+104 transitions. B1 recorded a 141-pixel speaker face, native speaker-medium
+composition, ChatGPT as the framed participant, and preserved rear screen.
+
 ## Interfaces and Dependencies
 
 No new port, credential, model, GPU runtime, dependency, or database migration is
@@ -133,3 +170,11 @@ before implementation; batch retry is explicitly gated by one qualified clip.
 Plan update note (2026-08-16 00:29Z): recorded passing source gates and live manager
 recovery; B1 control-plane activation waits for an existing scheduler lease to
 expire rather than disrupting its owner.
+
+Plan update note (2026-08-16 00:39Z): recorded the bounded admission override,
+stale CUDA container recovery, successful single-clip gate, stale-metadata cleanup,
+and the admitted serial batch.
+
+Plan update note (2026-08-16 01:15Z): recorded 20/20 batch completion, the 21/21
+media and metadata audit, stable idle recovery, and removal of the temporary
+admission override. Only final source publication and CI verification remain.
