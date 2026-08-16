@@ -1978,6 +1978,7 @@ async def test_remote_visual_sync_preserves_native_directed_provider_failure(
     target_asset.generation_metadata = {
         **target_asset.generation_metadata,
         "remote_job_id": "native-video-failed",
+        "native_camera_coverage_rejected": True,
         "prompt_inputs": {
             **target_asset.generation_metadata.get("prompt_inputs", {}),
             "studio_layout": "seated_panel",

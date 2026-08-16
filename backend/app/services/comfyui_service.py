@@ -6582,6 +6582,8 @@ class ComfyUiService:
                 "fallback_provider_metadata",
             ):
                 metadata.pop(key, None)
+        if result.metadata.get("native_camera_coverage_rejected") is not True:
+            metadata.pop("native_camera_coverage_rejected", None)
         if submitted_by is not None:
             metadata["generation_attempt_count"] = generation_count + 1
             metadata["submitted_by"] = submitted_by or "system"
