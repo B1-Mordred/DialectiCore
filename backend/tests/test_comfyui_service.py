@@ -1964,6 +1964,83 @@ async def test_remote_visual_sync_uses_fallback_when_provider_reports_failed(
 
 
 @pytest.mark.asyncio
+async def test_remote_visual_sync_preserves_native_directed_provider_failure(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(object_storage_local_path=str(tmp_path / "object-store"))
+    planned = await planned_visual_episode(settings)
+    target_asset = next(
+        asset
+        for asset in planned.assets
+        if asset.generation_metadata.get("visual_role") == "video_primary"
+    )
+    target_asset.status = "submitted"
+    target_asset.generation_metadata = {
+        **target_asset.generation_metadata,
+        "remote_job_id": "native-video-failed",
+        "prompt_inputs": {
+            **target_asset.generation_metadata.get("prompt_inputs", {}),
+            "studio_layout": "seated_panel",
+            "speaker_participant_id": "host",
+            "paired_participant_ids": [],
+            "camera_view": "speaker_medium",
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/history/native-video-failed"
+        return httpx.Response(
+            200,
+            json={
+                "status": "failed",
+                "prompt_id": "native-video-failed",
+                "failure_category": "gpu_runner_error",
+                "failure_message": (
+                    "lan-p40-media runtime recover hook returned HTTP 503: "
+                    '{"memory_used_mib":744,"idle_threshold_mib":512}'
+                ),
+            },
+        )
+
+    endpoint = ComfyUiEndpoint(
+        id="comfyui-remote",
+        name="ComfyUI Remote",
+        adapter_type="comfyui_http",
+        base_url="https://comfyui.example.test",
+    )
+    workflows = [
+        workflow.model_copy(update={"comfyui_endpoint_id": "comfyui-remote"})
+        for workflow in default_comfyui_workflows()
+    ]
+    service = ComfyUiService(settings, transport=httpx.MockTransport(handler))
+
+    synced = await service.sync_visual_results(
+        planned,
+        VisualResultSyncRequest(asset_ids=[target_asset.id], user_id="tester"),
+        endpoints=[endpoint],
+        workflows=workflows,
+    )
+
+    failed_asset = next(asset for asset in synced.assets if asset.id == target_asset.id)
+    assert failed_asset.status == "failed"
+    assert failed_asset.storage_uri is None
+    assert failed_asset.generation_metadata["provider_failure_category"] == (
+        "gpu_runner_error"
+    )
+    assert "idle_threshold_mib" in failed_asset.generation_metadata[
+        "provider_failure_message"
+    ]
+    assert failed_asset.generation_metadata["failure"] == (
+        failed_asset.generation_metadata["provider_failure_message"]
+    )
+    assert failed_asset.generation_metadata.get("fallback_visual") is not True
+    assert failed_asset.generation_metadata.get("native_camera_coverage_rejected") is not True
+    assert synced.audit_events[-1].details["fallback_count"] == 0
+    assert synced.audit_events[-1].details["failed_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_visual_media_qc_warns_when_primary_lipsync_is_not_ready(
     tmp_path: Path,
 ) -> None:

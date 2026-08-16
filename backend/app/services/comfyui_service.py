@@ -1962,7 +1962,11 @@ class ComfyUiService:
                 asset.updated_at = datetime.now(UTC)
                 running_count += 1
                 continue
-            if result.status == "failed" and request.fallback_on_failure:
+            if (
+                result.status == "failed"
+                and request.fallback_on_failure
+                and not self._requires_native_directed_visual(asset)
+            ):
                 result = await self._materialize_visual_result(
                     endpoint,
                     asset,
